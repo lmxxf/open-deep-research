@@ -3,84 +3,138 @@
     {
       "arm": "a-thinking",
       "status": "complete",
-      "wall_seconds": 136.561,
+      "wall_seconds": 182.443,
+      "human_wait_seconds": 0.0,
+      "automated_wall_seconds": 182.443,
+      "profile": "serial-thinking",
+      "max_tokens": 32768,
+      "model": "deepseek-flash",
+      "has_style_sample": false,
       "calls": 8,
       "serial_rounds": 8,
-      "input_tokens": 24539,
-      "reasoning_tokens": 17990,
-      "output_tokens": 25045,
-      "visible_output_tokens": 7055,
+      "input_tokens": 37594,
+      "reasoning_tokens": 16809,
+      "output_tokens": 32378,
+      "visible_output_tokens": 15569,
       "fetched_urls": 6,
       "cache_hits": 0,
       "source_count": 6,
       "evidence_count": 0,
-      "body_characters": 4736,
+      "body_characters": 15820,
       "estimated_usd_range": [
-        0.018294,
-        0.036588
+        0.024633,
+        0.049266
       ]
     },
     {
       "arm": "a-fast",
       "status": "complete",
-      "wall_seconds": 51.095,
+      "wall_seconds": 62.674,
+      "human_wait_seconds": 0.0,
+      "automated_wall_seconds": 62.674,
+      "profile": "parallel-fast",
+      "max_tokens": 32768,
+      "model": "deepseek-flash",
+      "has_style_sample": false,
       "calls": 8,
       "serial_rounds": 4,
-      "input_tokens": 25858,
+      "input_tokens": 22018,
       "reasoning_tokens": 0,
-      "output_tokens": 10409,
-      "visible_output_tokens": 10409,
+      "output_tokens": 12488,
+      "visible_output_tokens": 12488,
       "fetched_urls": 6,
       "cache_hits": 1,
       "source_count": 6,
       "evidence_count": 0,
-      "body_characters": 10017,
+      "body_characters": 14304,
       "estimated_usd_range": [
-        0.009974,
-        0.019947
+        0.010626,
+        0.021252
       ]
     },
     {
       "arm": "b-fast",
       "status": "complete",
-      "wall_seconds": 33.444,
-      "calls": 10,
+      "wall_seconds": 201.23,
+      "human_wait_seconds": 159.015,
+      "automated_wall_seconds": 42.216,
+      "profile": "parallel-fast",
+      "max_tokens": 8192,
+      "model": "deepseek-flash",
+      "has_style_sample": false,
+      "calls": 8,
       "serial_rounds": 6,
-      "input_tokens": 34302,
+      "input_tokens": 28133,
       "reasoning_tokens": 0,
-      "output_tokens": 6111,
-      "visible_output_tokens": 6111,
-      "fetched_urls": 6,
-      "cache_hits": 1,
-      "source_count": 6,
-      "evidence_count": 22,
-      "body_characters": 2929,
+      "output_tokens": 4762,
+      "visible_output_tokens": 4762,
+      "fetched_urls": 4,
+      "cache_hits": 0,
+      "source_count": 4,
+      "evidence_count": 12,
+      "body_characters": 2495,
       "estimated_usd_range": [
-        0.008285,
-        0.01657
+        0.006701,
+        0.013402
       ]
     },
     {
       "arm": "b-fast/revision-1",
       "status": "complete",
-      "wall_seconds": 1.602,
+      "wall_seconds": 1.925,
+      "human_wait_seconds": 0.0,
+      "automated_wall_seconds": 1.925,
+      "profile": "parallel-fast",
+      "max_tokens": 8192,
+      "model": "deepseek-flash",
+      "has_style_sample": false,
       "calls": 1,
       "serial_rounds": 1,
-      "input_tokens": 5101,
+      "input_tokens": 4115,
       "reasoning_tokens": 0,
-      "output_tokens": 193,
-      "visible_output_tokens": 193,
+      "output_tokens": 375,
+      "visible_output_tokens": 375,
       "fetched_urls": 0,
       "cache_hits": 0,
-      "source_count": 6,
-      "evidence_count": 22,
-      "body_characters": 2890,
+      "source_count": 4,
+      "evidence_count": 12,
+      "body_characters": 2600,
       "estimated_usd_range": [
-        0.000862,
-        0.001724
+        0.000823,
+        0.001647
       ]
     }
   ],
+  "input_checks": {
+    "question": {
+      "exact_match": true,
+      "missing_arms": [],
+      "values": {
+        "a-thinking": "一家 200 人的研发企业准备在内网私有化部署代码与知识库问答助手，硬件预算 200 万以内，要求支持 50 人并发：直接买华为昇腾 910B 一体机跑满血 DeepSeek-V4.1-Flash-1017（552B），还是用 4 张 RTX PRO 6000（96GB×4）工作站跑 GLM-5.3-Flash（320B）？请对比两套方案的算子适配坑点、吞吐延迟与运维成本。",
+        "a-fast": "一家 200 人的研发企业准备在内网私有化部署代码与知识库问答助手，硬件预算 200 万以内，要求支持 50 人并发：直接买华为昇腾 910B 一体机跑满血 DeepSeek-V4.1-Flash-1017（552B），还是用 4 张 RTX PRO 6000（96GB×4）工作站跑 GLM-5.3-Flash（320B）？请对比两套方案的算子适配坑点、吞吐延迟与运维成本。",
+        "b-fast": "一家 200 人的研发企业准备在内网私有化部署代码与知识库问答助手，硬件预算 200 万以内，要求支持 50 人并发：直接买华为昇腾 910B 一体机跑满血 DeepSeek-V4.1-Flash-1017（552B），还是用 4 张 RTX PRO 6000（96GB×4）工作站跑 GLM-5.3-Flash（320B）？请对比两套方案的算子适配坑点、吞吐延迟与运维成本。"
+      }
+    },
+    "brief": {
+      "exact_match": true,
+      "missing_arms": [],
+      "values": {
+        "a-thinking": "",
+        "a-fast": "",
+        "b-fast": ""
+      }
+    },
+    "answers": {
+      "exact_match": true,
+      "missing_arms": [],
+      "values": {
+        "a-thinking": "[{\"question\": \"“DeepSeek-V4.1-Flash-1017（552B）”与“GLM-5.3-Flash（320B）”是否为贵方内部或特定渠道的模型代号/版本？能否提供模型卡、上下文长度、量化格式（BF16/FP8/INT8）、是否MoE及激活参数量等规格，否则吞吐与显存测算只能做区间估算。\", \"answer\": \"都是2026年8至10月最新公开开源的模型：DeepSeek-V4.1-Flash-1017是552B主干+196B Engram（预填充激活8B/解码16B，原生FP8+FP4混合精度约510GB，CSA2压缩KV，1M上下文）；GLM-5.3-Flash是320B总参/18B激活（34层KDA线性+11层DSA稀疏MLA，1M上下文，支持FP8/INT4）。去网上搜这两个英文全名就能查到。\"}, {\"question\": \"50人并发的口径是同时在线的峰值请求数，还是50路持续生成（如每人长文总结/代码补全）？期望的SLA是什么（首token延迟、每用户输出速度token/s、可用性）？\", \"answer\": \"50人日常在线办公（峰值大约10到15路同时在跑请求），主要是内部代码Agent和文档问答（平均输入32K词元），要求首字延迟在5秒以内、单路生成速度不低于25 token/s，团队只有1名兼职运维。\"}, {\"question\": \"代码与知识库问答的上下文规模与检索方式（如单次注入多长代码/文档、是否有RAG、仓库级索引大小）？这直接决定长上下文显存与KV Cache占用。\", \"answer\": \"单次会话上下文平均32K词元、峰值128K词元，知识库走RAG召回片段拼进提示词，代码助手直接走多轮Agent工具调用（高前缀缓存命中），没有强制信创国产卡硬要求，优先看好不好部署维护。\"}]",
+        "a-fast": "[{\"question\": \"“DeepSeek-V4.1-Flash-1017（552B）”与“GLM-5.3-Flash（320B）”是否为贵方内部或特定渠道的模型代号/版本？能否提供模型卡、上下文长度、量化格式（BF16/FP8/INT8）、是否MoE及激活参数量等规格，否则吞吐与显存测算只能做区间估算。\", \"answer\": \"都是2026年8至10月最新公开开源的模型：DeepSeek-V4.1-Flash-1017是552B主干+196B Engram（预填充激活8B/解码16B，原生FP8+FP4混合精度约510GB，CSA2压缩KV，1M上下文）；GLM-5.3-Flash是320B总参/18B激活（34层KDA线性+11层DSA稀疏MLA，1M上下文，支持FP8/INT4）。去网上搜这两个英文全名就能查到。\"}, {\"question\": \"50人并发的口径是同时在线的峰值请求数，还是50路持续生成（如每人长文总结/代码补全）？期望的SLA是什么（首token延迟、每用户输出速度token/s、可用性）？\", \"answer\": \"50人日常在线办公（峰值大约10到15路同时在跑请求），主要是内部代码Agent和文档问答（平均输入32K词元），要求首字延迟在5秒以内、单路生成速度不低于25 token/s，团队只有1名兼职运维。\"}, {\"question\": \"代码与知识库问答的上下文规模与检索方式（如单次注入多长代码/文档、是否有RAG、仓库级索引大小）？这直接决定长上下文显存与KV Cache占用。\", \"answer\": \"单次会话上下文平均32K词元、峰值128K词元，知识库走RAG召回片段拼进提示词，代码助手直接走多轮Agent工具调用（高前缀缓存命中），没有强制信创国产卡硬要求，优先看好不好部署维护。\"}]",
+        "b-fast": "[{\"question\": \"“DeepSeek-V4.1-Flash-1017（552B）”与“GLM-5.3-Flash（320B）”是否为贵方内部或特定渠道的模型代号/版本？能否提供模型卡、上下文长度、量化格式（BF16/FP8/INT8）、是否MoE及激活参数量等规格，否则吞吐与显存测算只能做区间估算。\", \"answer\": \"都是2026年8至10月最新公开开源的模型：DeepSeek-V4.1-Flash-1017是552B主干+196B Engram（预填充激活8B/解码16B，原生FP8+FP4混合精度约510GB，CSA2压缩KV，1M上下文）；GLM-5.3-Flash是320B总参/18B激活（34层KDA线性+11层DSA稀疏MLA，1M上下文，支持FP8/INT4）。去网上搜这两个英文全名就能查到。\"}, {\"question\": \"50人并发的口径是同时在线的峰值请求数，还是50路持续生成（如每人长文总结/代码补全）？期望的SLA是什么（首token延迟、每用户输出速度token/s、可用性）？\", \"answer\": \"50人日常在线办公（峰值大约10到15路同时在跑请求），主要是内部代码Agent和文档问答（平均输入32K词元），要求首字延迟在5秒以内、单路生成速度不低于25 token/s，团队只有1名兼职运维。\"}, {\"question\": \"代码与知识库问答的上下文规模与检索方式（如单次注入多长代码/文档、是否有RAG、仓库级索引大小）？这直接决定长上下文显存与KV Cache占用。\", \"answer\": \"单次会话上下文平均32K词元、峰值128K词元，知识库走RAG召回片段拼进提示词，代码助手直接走多轮Agent工具调用（高前缀缓存命中），没有强制信创国产卡硬要求，优先看好不好部署维护。\"}]"
+      }
+    }
+  },
+  "comparison_scope": "首稿三组精确比较输入；修订单独列出，不参与初始输入一致性判断",
   "pricing_snapshot": "2026-10-20",
   "pricing_source": "https://api-docs.deepseek.com/quick_start/pricing/",
   "pricing_note": "Flash peak/off-peak range, not the provider invoice; output already includes reasoning",

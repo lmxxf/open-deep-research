@@ -54,7 +54,7 @@ python -m deep_research run --mode B --question '小团队怎样评估是否需�
 
 默认还有 600 秒整体期限、32 次模型请求上限、120 秒模型超时、15 秒网络超时及每次模型输出 8192 Token 上限。可用 `python -m deep_research run --help` 查看对应参数。
 
-思考内容也占输出预算。实测 A 的长文节点曾达到 8192 上限，程序将其记录为失败，不提交截断稿。`experiments/run_demo.sh` 因而对三组统一使用 `--max-tokens 16384`；这是上限，不代表每次都会用满。
+思考内容也占输出预算。程序检测到输出截断会记录失败，不提交截断稿。硬件题的A思考版在16384上限仍被截断，因此重跑脚本的两个A使用 `--max-tokens 32768`、240秒模型超时；B保留8192。本次公开B直接复用Zero终端原始运行，对照表明确列出预算与人工等待差异。上限不代表每次都会用满。
 
 ## 先对齐，再研究
 
@@ -71,10 +71,10 @@ WSL/Linux终端可用时会启用 `readline`，让中文退格按字符编辑；
 如果模型仍提出澄清问题，`--interactive` 会在终端询问。非交互运行会保留 `state.json`，状态为 `needs_alignment`，并以退出码 2 结束；把回答写入文件后，可用同一个输出目录重跑。只有显式添加 `--accept-assumptions` 才允许带着未确认假设继续，这些假设会记录在产物里，不冒充用户偏好。
 
 ```bash
-python -m deep_research run --mode B --question-file experiments/question.txt --brief-file experiments/brief.txt --answers-file experiments/answers.txt --style-sample experiments/style_sample.txt --output runs/b-fixture
+python -m deep_research run --mode B --question-file experiments/question.txt --brief-file experiments/brief.txt --answers-file experiments/answers.txt --output runs/b-fixture
 ```
 
-这四个 `experiments/*.txt` 是固定实验输入；其中答案和文风样本是为实验编写的设定，不是用户口述或真实客户原稿。英文来源可以保留原始技术信息，中文成稿应按中文读者的表达习惯重组。文风样本帮助确定声音，不覆盖事实与出处。
+当前 `experiments/question.txt`、`brief.txt`、`answers.txt` 原样取自Zero在WSL终端完成的 `runs/try1`：题目为昇腾910B跑DeepSeek-V4.1-Flash-1017与4×RTX PRO 6000跑GLM-5.3-Flash的私有化选型，brief为空，answers是他的三条真实回答。本轮没有额外注入文风样本。英文来源可以保留原始技术信息，中文成稿应按中文读者的表达习惯重组。文风样本帮助确定声音，不覆盖事实与出处。
 
 ## 改已有稿，不必从头重跑
 

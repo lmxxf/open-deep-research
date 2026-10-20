@@ -1,0 +1,38 @@
+{
+  "topic": "Ascend 910B / DeepSeek-V4.1-Flash-1017 vs 4 RTX PRO 6000 / GLM-5.3-Flash",
+  "b_original_run": "runs/try1",
+  "b_copied_not_rerun": true,
+  "b_created_at": "2026-10-20T13:11:07.509388+00:00",
+  "b_original_state_sha256": "ca1fc4f2ebe6240abb578068e6b9d58ee95c3eeb5b773faeb3f7b41c59dc912c",
+  "code_commit": "3937a43ad6b60dea9664b17d97521eb969234683",
+  "input_sha256": {
+    "question": "46cfb86e01b7e598ca0002c8e5022ee8a7f3ba8cb74cf5090dd5c5f3f6c546e0",
+    "brief": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "answers": "100274866d64191a81fbb9cf311cb346afc3b9258d6cb6946a5769b57c73d17e"
+  },
+  "brief_is_empty": true,
+  "answers_count": 3,
+  "model_specifications_are_user_supplied": true,
+  "source_sha256": {
+    "deep_research/__init__.py": "86143448bd918081b78fb8651dfc5042eb1a4ee2617577b484d7b142e6a1be45",
+    "deep_research/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+    "deep_research/cli.py": "222bd47d01096e8d1901fd22e0909e36b61c51701fd52b576919522547f9e105",
+    "deep_research/engine.py": "728a0ef65847632d29fd61a12dcf0280c05b5e480a9509e34ffe2afb50824d9a",
+    "deep_research/llm.py": "d6ce915da1b33edf4712c70784669b8e5748613f31dd8f01469b8d554555d1e0",
+    "deep_research/metrics.py": "9b384e0981ac70bc698b2cd5fde8d8d2b5a99f6e83db9dbdfa722d988fc4a54e",
+    "deep_research/prompts.py": "761e564d6b88e40e6fd3b6bffcf1f75f98b94f11f65a97218ad3dd686cc409e0",
+    "deep_research/text.py": "e680ed6d09257570d9cd4e8267d44974a56b53e703eba8d0269ef27ce3f09ff4",
+    "deep_research/web.py": "082e9c200933c16e605c9bc4bca281924f407c2d5d266b689075a7a5d6856053"
+  },
+  "analysis_tools_sha256": {
+    "experiments/compare.py": "af425266f9e15715cc64ced44a975f7216270b31482e22e281db4ab209309610",
+    "experiments/run_demo.sh": "2f48fdbd68d564eb19128d5d60dec603dab2f6f103dd3649c0d653956b357c2b"
+  },
+  "successful_run_order": [
+    "runs/try1 (B, interactive)",
+    "runs/hardware-20261020/b-fast/revision-1",
+    "runs/hardware-20261020/a-thinking",
+    "runs/hardware-20261020/a-fast"
+  ],
+  "failed_attempt": "runs/hardware-20261020/a-thinking-truncated-16384"
+}

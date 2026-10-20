@@ -1,5 +1,0 @@
-{
-  "error_type": "ValueError",
-  "message": "writer 应引用来源ID，不能自行生成URL",
-  "status": "failed"
-}

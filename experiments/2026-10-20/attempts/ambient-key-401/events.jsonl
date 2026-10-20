@@ -1,1 +1,0 @@
-{"id": "n1", "kind": "model", "name": "align", "parents": [], "start_s": 0.06447, "status": "error", "attempt": 1, "requested_model": "deepseek-flash", "thinking": false, "error_type": "ModelError", "end_s": 0.166443, "elapsed_s": 0.101973}

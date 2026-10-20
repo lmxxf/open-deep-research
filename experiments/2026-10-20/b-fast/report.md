@@ -1,60 +1,40 @@
-# 一家50人的软件公司准备做内部文档问答助手，应该采用DeepSeek API还是本地部署Qwen？请比较第一版的实现路线、资料更新和权限控制，以及最容易踩的坑。
+# 一家 200 人的研发企业准备在内网私有化部署代码与知识库问答助手，硬件预算 200 万以内，要求支持 50 人并发：直接买华为昇腾 910B 一体机跑满血 DeepSeek-V4.1-Flash-1017（552B），还是用 4 张 RTX PRO 6000（96GB×4）工作站跑 GLM-5.3-Flash（320B）？请对比两套方案的算子适配坑点、吞吐延迟与运维成本。
 
+## P1 · 先给结论：按 200 万预算与现有证据，倾向 4×RTX PRO 6000 + GLM-5.3-Flash
 
-## P1 · 结论：首版选 DeepSeek API，但只在非敏感白名单上跑通
+如果目标只是支撑约 200 名研发人员、峰值 10 到 15 路同时生成、首字延迟低于 5 秒、单路生成不低于 25 token/s，那么按目前能看到的证据，4 卡 RTX PRO 6000 工作站运行 GLM-5.3-Flash 的确定性明显高于昇腾 910B 一体机运行满血 DeepSeek-V4.1-Flash-1017。原因不在于昇腾一定跑不动，而在于满血 552B 模型的部署形态本身就偏重：其检查点约 511 GB（476 GiB）[E1]，公开的 vLLM 配方给出的最低显存约 614 GB，并需要把 196B 的 Engram 稀疏参数卸载到主机内存 [E2][E9]。4 张 96GB 卡合计 384GB，本身也装不下这一套配置。也就是说，两套方案的真正差别是“模型选型决定了能不能落到这个硬件档位”，而非“哪张卡更快”。这里需要提醒：以上测算来自 NVIDIA 平台的公开配方，并没有昇腾 910B 的实测数据；昇腾能否运行该模型，需以官方模型支持列表核验 [E8]。
 
-如果这两天就要定一条路线上线，我建议首版走 DeepSeek 云端 API，同时把“哪些文档可以入库”做成硬白名单，客户合同、个人信息类文档这一版完全不接。理由不是 API 更聪明，而是两周、一名后端工程师这个约束下，云端的工程量几乎只剩检索和权限，模型服务不用自己搭。本地部署 Qwen 并不是错，但它把模型下载、推理引擎安装、显存调参、服务和端口暴露这几件事都压到了同一个人身上 [E12][E13][E14]，这些工作在第一版里不产生用户价值。取舍很清楚：API 路线用“敏感文档先不接”换上线速度，等试用里检索和权限跑稳，再评估本地化。需要说明的是，本文没有实测两条路线的吞吐、延迟或显存占用，任何规模判断都要靠你们自己的小规模验收。
+## P2 · 显存不是 50 人并发的瓶颈，权重与加载路径才是
 
-## P2 · 两条首版路线的关键路径差异
+在 4 卡 H200 TP4 的参考配置里，卸载后约 314GB 权重常驻显存，KV 按约 890 字节/令牌估算，单会话 1M 上下文约占 890MB，剩余显存可覆盖 100 多个并发会话 [E10]。按你们的实际口径，平均 32K、峰值 128K 令牌，峰值十几路同时生成，KV 占用远低于这个量级。这说明真正的约束集中在两点：一是 552B 权重本身要占用的显存容量，二是 Engram 需要依赖 CPU offload 才能在小显存卡上做 TP4 [E3]。GLM-5.3-Flash 是 320B 总参、18B 激活，权重体量约为前者的六成，且支持 FP8、INT4；在 4×96GB 的工作站范围内，腾出 KV 的余地明显更大。但这一判断属于推算：证据中没有 GLM-5.3-Flash 在 4×RTX PRO 6000 上的显存实测，也没有昇腾 910B 的显存占用数据。
 
-云端路线的关键路径是：文档摄取与分块、向量与关键词检索、把召回片段发给 DeepSeek 生成答案、再做引用展示。开源样本里有现成的三段式实现：抽取 PDF 文本、用 HuggingFace Embeddings 向量化写入 ChromaDB、查询时召回相关片段、再送给外部 LLM 生成答案 [E8][E9]。注意这条链路里，召回出来的原文会离开内网 [E9]，所以白名单必须在入库和检索之前拦住，不能靠事后检查。本地路线的关键路径多出三步：用 vLLM 把 Qwen 服务化成 HTTP 接口（示例是通过 tensor-parallel-size 设并行度）[E11]，从模型仓库下载权重 [E13]，以及处理推理服务的网络暴露和访问控制 [E14]。这两条路线的检索层、权限层和引用逻辑其实可以共用，差别主要在生成侧是调外部接口还是调内网服务，所以第一版按 API 设计、把生成调用抽象成一个可替换的客户端，后面换本地模型不会推翻前面的工作。
+## P3 · 算子适配：昇腾路线的未知项多于 CUDA 路线
 
-## P3 · 检索：混合召回，元数据是引用的地基
+昇腾侧的推理软件栈是 MindIE，文本生成的服务化路径为 MindIE Motor 对接 vLLM-Ascend，而不是原生 CUDA 版 vLLM [E5][E6]。这意味着模型要跑起来，FlashAttention、MoE 路由、FP8/FP4 量化 GEMM 等算子都需要有 Ascend 版本或相应回退，而提供的资料里没有 V4.1-Flash 或 GLM-5.3-Flash 在昇腾上的算子覆盖清单，官网也仅指向模型支持列表 [E8]。相对而言，V4.1-Flash 的公开部署配方建立在 NVIDIA Hopper/Blackwell 与 vLLM 之上 [E9]，GLM-5.3-Flash 亦有公开的多卡部署教程，但该来源正文仅有 176 字符，无法提取有效技术细节。因此，在“适配确定性”这一维度上，昇腾方案目前只能定性为“需要 POC 验证”，不能给出可信的算子支持结论；把 552B 混合 FP8+FP4 精度的模型首次迁到昇腾，风险与工期都应留足余量。
 
-中文为主的产品手册和研发规范，单靠向量检索容易漏掉型号、命令、术语这类精确匹配。样本项目的做法是递归字符分块加重叠 [E2]，但它把 BM25 加向量嵌入的混合召回列为待改进项，说明这不是现成能力，要自己补 [E10]。首版我建议直接在召回层做向量加关键词的混合，关键词侧用适合中文的分词。引用能不能定位，取决于入库时有没有把元数据写进每个分块：来源文件名、页码、章节、分块 ID [E4]。这件事必须在摄取阶段做，不能等答案生成后回填。一个现实风险是，按字符切分本身不保证段落和 PDF 页码边界完整 [E2]，所以对 PDF 要按页抽取再切，跨页片段要记录起止页。开源参考项目用了 pypdf 和 docx2txt 解析 txt、pdf、docx [E1]，但没有说明是否保留页码和段落定位，这一点不能照搬，要自己加。
+## P4 · 吞吐与延迟：只能做区间判断，不能给出承诺值
 
-## P4 · 资料更新：全量重建先能跑，增量与失效要设计
+能直接引用的实测只来自 8 卡 B200 节点上运行 284B 的 V4-Flash（前代，非 V4.1-Flash）：单用户 272 tok/s，8 并发 170 tok/s，16 并发 140 tok/s，32 并发 116 tok/s，首 token 延迟 0.64 秒 [E11]。据此可以保守推断：在峰值 10 到 15 路并发、单路 25 tok/s 的要求下，主流 NVIDIA 平台余量很大；但这段数据不能直接外推到 552B 的 V4.1-Flash，也不能外推到昇腾 910B。对 GLM-5.3-Flash 而言，32 层激活规模较小，专家激活参数只有 18B，理论上单路解码速度优于 552B 模型，但缺少同口径实测。首字延迟低于 5 秒在 RAG 场景下还受检索与 32K 长输入预填充影响，这部分延迟与模型平台无关，应单独计入端到端预算。
 
-5000 份文档、10 人使用，首版可以把索引重建做成可触发的后台任务，不必一开始就做复杂增量。样本项目在文档上传或删除时用子进程异步重建整个语义库 [E3]，这个做法简单、行为可预期，适合两周版本；代价是每次变更都是全量重建，5000 份文档重建一次要多久没有材料可依，必须实测 [E3]。同时要防“更新后索引陈旧”这个坑：删除和修改文档必须走同一个入口触发重建，不能让员工直接改共享盘里的文件而索引不知情。如果实测发现全量重建太慢，第二版再引入按文档版本号做差量重建和旧片段失效。首版至少要保证一个语义：文档删除后，旧片段不能再被召回。
+## P5 · 运维成本：一人兼职运维，冷启动与版本管理要算进 TCO
 
-## P5 · 权限：检索前按项目过滤，不能只靠提示词
+满血 V4.1-Flash 的首次加载非常慢，vLLM 配方为此把引擎就绪超时设为 3600 秒 [E4]；在 8 卡 B200 上同时加载 GLM-5.3-Flash 与 V4-Flash 冷启动约 29 分钟，仅 GLM-5.3 约 16 分钟，启用并行权重加载后 V4-Flash 可降到约 1 分钟 [E12]。对只有一名兼职运维的团队来说，这意味着故障恢复、升级回滚、机房断电后的重启都需要预留窗口，而且 511GB 的检查点在存储与分发上的负担也更重 [E1]。昇腾一侧则要额外承担 CANN、MindIE、驱动固件之间的版本对应关系；昇腾文档单独设有版本说明，说明兼容管理是常规工作 [E7]。两种方案在这一点上的差别更多体现在人力与生态上：CUDA 与 vLLM 的社区资料更丰富，遇到问题更容易搜到现成解法；昇腾的排障路径更依赖官方支持与厂商服务。
 
-按你们的设定，非敏感文档也不能全员可见，首版至少两个项目隔离。这里的核心原则是权限过滤发生在召回之前，而不是把权限写进提示词让模型自己守规矩。样本项目的进阶架构里把 RBAC、部门权限和文档权限列为结构组件 [E6]，但那是完整阶段的设计，不是两周能落地的全部内容，首版可以简化为“用户—项目”白名单：入库时给每个分块打项目标签，查询时按用户所属项目在向量和关键词检索里都加过滤条件。只过滤向量检索、忘了关键词召回，是典型的越权漏口。验收口径就一条：用 A 项目的账号问 B 项目文档里的具体内容，答案里不能出现该内容，引用里也不能出现该文件。外部 API 路线下还要加一层输入侧拦截，样本材料建议用输入过滤和分类分级防止敏感内容外发 [E18]，落地上就是在文档入库和用户提问两个入口各放一道白名单检查。
+## P6 · 200 万预算的分配与采购前必须实测的清单
 
-## P6 · 本地 Qwen 路线：能做，但两周内不是一个人的活
-
-如果公司后面必须让敏感文档也进问答，本地部署是方向，因为本地推理可以让文档内容全程不出内网 [E16]。但首版就要本地化，需要正视几个工程量：vLLM 要装、模型权重要下载落地 [E12][E13]，推理端点默认只监听本机 8000 端口，接内网试用还要处理网络暴露与访问控制，而权限隔离不在推理服务层完成 [E14]；用容器方式跑时，共享内存等参数配错会报难以定位的运行时错误 [E20]；显存利用率和并发数需要显式调参，单卡并发有拐点，得从小并发往上一路压测找 [E19][E22]。这些经验数据来自视觉模型和特定配置，不能直接换算成你们双 24GB 卡跑文本模型的表现，我不做这个换算。对一名后端工程师来说，这条路线更适合作为试用期之后、有明确敏感文档需求时的二期项目。
-
-## P7 · 要不要混合路线：现在不必
-
-非敏感走云端、敏感走本地的混合架构在技术上成立，样本材料也把它列为兼顾安全与成本的方案 [E17]。但它需要数据分级和自动路由两套额外机制 [E17]，对一个两周上线、单人维护的团队来说，这是把两条路线的复杂度叠加而不是折中。首版的正确做法是用白名单物理隔离：敏感文档根本不进系统，也就不存在错误路由的风险。等试用验证了检索质量和使用意愿，再按“哪些文档必须本地”来划分二期范围。另需提示，云端 API 的数据保留政策，材料只提供了来源自述称默认保留 30 天、企业版可签 DPA [E15]，这是二手描述而非一手条款，如果评审会要对外承诺数据边界，应直接向服务方索取条款原文再定。
-
-## P8 · 最容易踩的五个坑与验收口径
-
-按风险排序：第一，权限过滤只做在向量检索上、漏了关键词侧，导致跨项目召回；第二，PDF 按字符切分破坏页码，答案引用点不到原页，这是分块策略问题不是模型问题 [E2][E4]；第三，更新链路不统一，删除的文档仍被召回 [E3]；第四，外部 API 误发敏感内容，必须靠入库和提问两个入口的前置白名单拦，不能靠人自觉 [E18][E9]；第五，如果后续转本地，显存和并发没有实测就按经验值上线，可能一压测就排队 [E22]。验收就按你们说的 10 人小规模试用，看两件事：随机抽问能不能定位到文件和段落（PDF 到页），以及两个项目之间互相提问不串数据。吞吐和延迟这一版只记录不承诺，等有了真实使用数据再定规模。
-
-## P9 · 两周内的可执行第一步
-
-第 1 周先定两件事：文档白名单和项目标签规则，把两个项目的非敏感文档圈出来，明确“谁属于哪个项目”；同时把摄取管线做出来，保证每个分块带文件名、页码、章节和项目标签 [E4]。第 2 周把检索问答链路串起来，生成侧先接 DeepSeek API，接之前完成入库白名单和提问侧输入检查两道拦截。检索层用向量加关键词混合 [E10]，索引重建先用异步全量重建跑通 [E3]，同时记录单次重建耗时。最后用 10 人试用做验收，按上一段的两个口径判定是否进入下一阶段，并把“是否上本地 Qwen”作为试用结论之后的独立决策，不压进这两周。
+提供的证据不包含昇腾 910B 一体机与 4×RTX PRO 6000 工作站的报价、整机功耗、互联带宽和维保价格，因此无法判断 200 万是否够用，也无法做严格的 TCO 对比。建议在采购前先完成以下几项验证，并写入验收口径：一是用你们的真实负载（32K 平均输入、128K 峰值、峰值 15 路并发、RAG 拼接、多轮 Agent 高前缀缓存命中）跑测，记录首字延迟、单路 tok/s、P95 延迟；二是核实目标模型在所选平台官方支持列表中的状态与量化格式，尤其是 V4.1-Flash 在昇腾上的 Engram 卸载与 FP4 算子支持 [E8][E9]；三是记录冷启动时间与故障重启时间，并确认是否在可接受的运维窗口内 [E4][E12]；四是让供应商就 3 年维保、备件与现场支持报价，把存储、网络、供电改造一并计入。若 POC 实测显示昇腾能稳定运行 V4.1-Flash 且延迟达标，则可重新评估；在此之前，以 GLM-5.3-Flash 加 CUDA 工作站作为首选，是风险更低的路径。
 
 ## 来源与证据
 
-- [E1] [GitHub - lindejingl-dev/Enterprise-RAG-QA: An enterprise-grade RAG QA system supporting TXT/PDF/DOCX ingestion, vector index auto-rebuilding, and memory-enabled chat using DeepSeek and FAISS. · GitHub](https://github.com/lindejingl-dev/Enterprise-RAG-QA)；原文字符 426–615；对象为该开源项目的摄取流程；支持格式限 txt/pdf/docx；是否保留页码、段落定位未说明；文档规模与中文占比未说明。
-- [E2] [GitHub - lindejingl-dev/Enterprise-RAG-QA: An enterprise-grade RAG QA system supporting TXT/PDF/DOCX ingestion, vector index auto-rebuilding, and memory-enabled chat using DeepSeek and FAISS. · GitHub](https://github.com/lindejingl-dev/Enterprise-RAG-QA)；原文字符 618–820；分块参数（chunk 大小、重叠长度）未给出；是否针对中文优化未说明；对PDF页码保持的影响未说明。
-- [E3] [GitHub - lindejingl-dev/Enterprise-RAG-QA: An enterprise-grade RAG QA system supporting TXT/PDF/DOCX ingestion, vector index auto-rebuilding, and memory-enabled chat using DeepSeek and FAISS. · GitHub](https://github.com/lindejingl-dev/Enterprise-RAG-QA)；原文字符 965–1156；更新方式为通过 FastAPI 接口程序化上传/删除触发；重建为整库重建而非明确增量；单次重建耗时与并发影响未说明。
-- [E4] [How to Build Your Own RAG Knowledge Base Q&A System with DeepSeek - DEV Community](https://dev.to/cheng_zhang_45ee857b979b0/how-to-build-your-own-rag-knowledge-base-qa-system-with-deepseek-3dl9)；原文字符 10425–10571；原文为通用RAG实践建议；未限定文档规模、语言或部署方式；未说明页码在跨页分块下的精确性
-- [E6] [How to Build Your Own RAG Knowledge Base Q&A System with DeepSeek - DEV Community](https://dev.to/cheng_zhang_45ee857b979b0/how-to-build-your-own-rag-knowledge-base-qa-system-with-deepseek-3dl9)；原文字符 4266–4335；该行出现在原文的进阶架构建议表中，非首版最小方案；原文未给出过滤实现细节、是否检索前过滤及测试验证方式
-- [E8] [GitHub - AymenGabsi/rag_deepseek_groq_doc_qa: 📄⚡ A RAG (Retrieval-Augmented Generation) Document QA system using Deepseek and Groq for fast and efficient querying over documents. Inspired by this tutorial, this project demonstrates how to set up a high-performance AI-powered question-answering system. · GitHub](https://github.com/AymenGabsi/rag_deepseek_groq_doc_qa)；原文字符 1471–1691；仅针对PDF单文件场景；未说明分块策略、页码元数据保留与增量更新机制；未说明中文文档效果
-- [E9] [GitHub - AymenGabsi/rag_deepseek_groq_doc_qa: 📄⚡ A RAG (Retrieval-Augmented Generation) Document QA system using Deepseek and Groq for fast and efficient querying over documents. Inspired by this tutorial, this project demonstrates how to set up a high-performance AI-powered question-answering system. · GitHub](https://github.com/AymenGabsi/rag_deepseek_groq_doc_qa)；原文字符 1620–1768；样本项目把内容发送至Groq云端；是否保留日志、数据留存政策未说明；不涉及权限过滤与项目隔离
-- [E10] [GitHub - AymenGabsi/rag_deepseek_groq_doc_qa: 📄⚡ A RAG (Retrieval-Augmented Generation) Document QA system using Deepseek and Groq for fast and efficient querying over documents. Inspired by this tutorial, this project demonstrates how to set up a high-performance AI-powered question-answering system. · GitHub](https://github.com/AymenGabsi/rag_deepseek_groq_doc_qa)；原文字符 2066–2137；列为“计划改进”而非已实现功能；未说明中文分词与BM25适配；未给出效果数据
-- [E11] [使用 vLLM 部署 Qwen2.5 大模型_vllm部署qwen2.5-CSDN博客](https://blog.csdn.net/mnyh35/article/details/149165996)；原文字符 688–759；对象为Qwen2.5-Coder-32B-Instruct-AWQ，推理引擎vLLM，示例配置4路张量并行；是否适配双24GB卡、显存占用与吞吐均未说明，需实测；未涉及检索、权限或文档摄取。
-- [E12] [使用 vLLM 部署 Qwen2.5 大模型_vllm部署qwen2.5-CSDN博客](https://blog.csdn.net/mnyh35/article/details/149165996)；原文字符 536–552；操作对象为Linux终端或SSH连接服务器（文中提及若用Windows需另装C++ Build Tools）；未说明CUDA与驱动版本要求，也未说明安装失败时的排障成本。
-- [E13] [使用 vLLM 部署 Qwen2.5 大模型_vllm部署qwen2.5-CSDN博客](https://blog.csdn.net/mnyh35/article/details/149165996)；原文字符 614–674；示例通过HF_ENDPOINT=https://hf-mirror.com镜像下载Qwen2.5-Coder-32B-Instruct-AWQ；权重体积、下载耗时与存储需求未说明。
-- [E14] [使用 vLLM 部署 Qwen2.5 大模型_vllm部署qwen2.5-CSDN博客](https://blog.csdn.net/mnyh35/article/details/149165996)；原文字符 824–868；示例以Postman在本机调用；未说明多用户并发、鉴权、按项目过滤或HTTPS配置；是否改绑到内网地址未说明。
-- [E15] [DeepSeek 数据隐私与安全性深度分析：企业用户须知 | DeepSeek AI Blog](https://freedeepseekapi.com/zh/blog/deepseek-data-privacy-security-analysis)；原文字符 441–538；对象为DeepSeek云端API；具体计费版本、企业版开通条件与DPA文本未说明；本地部署部分另述不接触数据。
-- [E16] [DeepSeek 数据隐私与安全性深度分析：企业用户须知 | DeepSeek AI Blog](https://freedeepseekapi.com/zh/blog/deepseek-data-privacy-security-analysis)；原文字符 982–1038；指DeepSeek开源模型的本地部署；文中未涉及Qwen；未说明具体硬件是否够用，也未给出吞吐或显存实测。
-- [E17] [DeepSeek 数据隐私与安全性深度分析：企业用户须知 | DeepSeek AI Blog](https://freedeepseekapi.com/zh/blog/deepseek-data-privacy-security-analysis)；原文字符 2123–2234；适用于中大型企业场景的泛化描述；未给出实现细节、成本或验证数据；本文所述VPN为IPSec/WireGuard加密隧道。
-- [E18] [DeepSeek 数据隐私与安全性深度分析：企业用户须知 | DeepSeek AI Blog](https://freedeepseekapi.com/zh/blog/deepseek-data-privacy-security-analysis)；原文字符 6732–6838；针对员工使用AI的一般性建议，非针对文档问答助手的检索链路；未说明与项目级权限过滤的配合方式，也未给出落地成本。
-- [E19] [Qwen2-VL与vLLM部署实战：单卡多卡启动与批量推理全指南-CSDN博客](https://blog.csdn.net/weixin_29047545/article/details/168041183)；原文字符 3848–3955；单卡24GB、Qwen2-VL-7B-Instruct、FP16、vLLM 0.8.x；并发与上下文长度在文中另设为batch size 1、32768上下文，非50人公司内网场景
-- [E20] [Qwen2-VL与vLLM部署实战：单卡多卡启动与批量推理全指南-CSDN博客](https://blog.csdn.net/weixin_29047545/article/details/168041183)；原文字符 2237–2328；vLLM官方Docker镜像、多模态输入场景；纯文本模型是否同样需要该配置文中未说明
-- [E22] [Qwen2-VL与vLLM部署实战：单卡多卡启动与批量推理全指南-CSDN博客](https://blog.csdn.net/weixin_29047545/article/details/168041183)；原文字符 11497–11649；Qwen2-VL-7B单卡24GB、多模态请求；并发拐点与延迟数值仅对该配置与输入有效
+- [E1] [deepseek-ai/DeepSeek-V4.1-Flash | vLLM Recipes](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)；原文字符 8718–8791；对象为DeepSeek-V4.1-Flash-1017检查点（含MXFP4专家、FP8 Engram表与块缩放）；具体磁盘/显存口径为原文所述，未说明与昇腾910B一体机的对应关系
+- [E2] [deepseek-ai/DeepSeek-V4.1-Flash | vLLM Recipes](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)；原文字符 9281–9457；针对DeepSeek-V4.1-Flash在原文所列NVIDIA平台配置（GB200 NVL4 TP4、H200 8卡）；未提及昇腾910B与RTX PRO 6000的适配与显存测算
+- [E3] [deepseek-ai/DeepSeek-V4.1-Flash | vLLM Recipes](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)；原文字符 20045–20253；NVIDIA H200、TP4、vLLM配置；仅说明输出不变，未给出延迟/吞吐影响数据，也未涉及昇腾或RTX PRO 6000工作站
+- [E4] [deepseek-ai/DeepSeek-V4.1-Flash | vLLM Recipes](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash)；原文字符 10726–10808；vLLM部署DeepSeek-V4.1-Flash，具体硬件平台未在此句限定；未给出实际加载时长与昇腾平台对比
+- [E5] [MindIE-文档-昇腾社区](https://www.hiascend.com/developer/software/mindie/document)；原文字符 4561–4632；对象为昇腾硬件推理场景；适用具体型号、CANN 版本、预算与并发要求均未说明。
+- [E6] [MindIE-文档-昇腾社区](https://www.hiascend.com/developer/software/mindie/document)；原文字符 4848–5040；文档版本 3.1.0；具体支持的模型列表、量化格式与并发能力需另查模型支持列表，页面未给出。
+- [E7] [MindIE-文档-昇腾社区](https://www.hiascend.com/developer/software/mindie/document)；原文字符 5227–5331；仅为文档导航条目，未说明升级频率、兼容矩阵或对具体模型的影响。
+- [E8] [MindIE-文档-昇腾社区](https://www.hiascend.com/developer/software/mindie/document)；原文字符 5627–5678；该页面未提供任何模型名称、量化格式或算子覆盖信息，无法据此判断目标模型的适配确定性。
+- [E9] [DeepSeek V4.1 Flash GPU Requirements: 552B MoE Image Input (2026) | Spheron](https://www.spheron.network/blog/deploy-deepseek-v4-1-flash-on-gpu-cloud-552b-moe-setup-2026/)；原文字符 847–1059；对象为 DeepSeek-V4.1-Flash（552B MoE）；平台为 2026 年 vLLM 配方下的 NVIDIA H200/B200；Engram 参数卸载至 CPU RAM；未说明昇腾平台、量化格式替代方案及 50 并发场景。
+- [E10] [DeepSeek V4.1 Flash GPU Requirements: 552B MoE Image Input (2026) | Spheron](https://www.spheron.network/blog/deploy-deepseek-v4-1-flash-on-gpu-cloud-552b-moe-setup-2026/)；原文字符 6022–6150；仅文本输入；1M 令牌上下文；4x H200 SXM5 TP4；KV 按 890 B/token 估算；并发会话数指显存可容纳数，非吞吐/SLA 保证；未给出延迟与吞吐数据。
+- [E11] [DeepSeek V4.1 Flash GPU Requirements: 552B MoE Image Input (2026) | Spheron](https://www.spheron.network/blog/deploy-deepseek-v4-1-flash-on-gpu-cloud-552b-moe-setup-2026/)；原文字符 14852–15013；对象为 DeepSeek V4-Flash 0731 检查点（284B），非 V4.1-Flash；8x B200 节点、FP8 权重 + FP4 KV、1M 上下文、vLLM；每副本 2 卡；测试时间 2026-10-15；未覆盖昇腾 910B 与 GLM-5.3-Flash 的同等口径。
+- [E12] [DeepSeek V4.1 Flash GPU Requirements: 552B MoE Image Input (2026) | Spheron](https://www.spheron.network/blog/deploy-deepseek-v4-1-flash-on-gpu-cloud-552b-moe-setup-2026/)；原文字符 15411–15669；8x B200 节点、空缓存冷启动；涉及 GLM-5.3-Flash 与 V4-Flash（非 V4.1-Flash）；并行权重加载为优化手段；未说明昇腾一体机或工作站场景的启动时间。

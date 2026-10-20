@@ -1,8 +1,8 @@
 {
-  "question": "一家50人的软件公司准备做内部文档问答助手，应该采用DeepSeek API还是本地部署Qwen？请比较第一版的实现路线、资料更新和权限控制，以及最容易踩的坑。\n",
-  "brief": "读者是研发负责人，用途是决定两周内怎么上线内部试用版，不是写行业全景综述。\n范围：中文为主的产品手册、研发规范和运维文档，约5000份；10人同时使用。\n先接非敏感文档；包含客户合同和个人信息的文档不得发到外部API，首版可以不接。\n现有一台有两张24GB显卡的Linux服务器，只有一名后端工程师维护；不打算训练模型。\n请比较云端API与本地开源模型的工程取舍，说明检索、更新、权限和引用溯源怎么做。\n不要假装测过吞吐，也不要编模型当前价格、排行榜或显存实测数据；材料不支持就标明需要实测。\n交付自然中文、能拿去开评审会的短报告，重点是明确取舍和可执行的第一步。\n",
-  "answers": "以下是本次实验人为设定的场景参数，不是Zero或真实客户的额外口述：\n两周目标是最小可用内部试用，预留小规模验收，不包括全面性能压测。\n非敏感文档也要按项目授权，不能默认所有员工都能看；首版至少按两个项目隔离。\n引用要能定位到文件与段落，PDF尽量带页码，不要求首版做复杂前端跳转。\n按这些范围直接研究，其余实现细节采用可撤回的合理默认值，不需要再追问。\n",
-  "style_sample": "【本项目自写的语态示例，不是客户原稿，也不是事实来源】\n先把试用范围收小。第一版只接能公开给同事看的手册，问题答不上来就给出原文链接，不急着替人做决定。这样我们能先看清两个问题：资料有没有找对，回答有没有越过资料。等这两件事跑稳，再讨论接入更多文档和自动执行。\n",
+  "question": "一家 200 人的研发企业准备在内网私有化部署代码与知识库问答助手，硬件预算 200 万以内，要求支持 50 人并发：直接买华为昇腾 910B 一体机跑满血 DeepSeek-V4.1-Flash-1017（552B），还是用 4 张 RTX PRO 6000（96GB×4）工作站跑 GLM-5.3-Flash（320B）？请对比两套方案的算子适配坑点、吞吐延迟与运维成本。",
+  "brief": "",
+  "answers": "[{\"question\": \"“DeepSeek-V4.1-Flash-1017（552B）”与“GLM-5.3-Flash（320B）”是否为贵方内部或特定渠道的模型代号/版本？能否提供模型卡、上下文长度、量化格式（BF16/FP8/INT8）、是否MoE及激活参数量等规格，否则吞吐与显存测算只能做区间估算。\", \"answer\": \"都是2026年8至10月最新公开开源的模型：DeepSeek-V4.1-Flash-1017是552B主干+196B Engram（预填充激活8B/解码16B，原生FP8+FP4混合精度约510GB，CSA2压缩KV，1M上下文）；GLM-5.3-Flash是320B总参/18B激活（34层KDA线性+11层DSA稀疏MLA，1M上下文，支持FP8/INT4）。去网上搜这两个英文全名就能查到。\"}, {\"question\": \"50人并发的口径是同时在线的峰值请求数，还是50路持续生成（如每人长文总结/代码补全）？期望的SLA是什么（首token延迟、每用户输出速度token/s、可用性）？\", \"answer\": \"50人日常在线办公（峰值大约10到15路同时在跑请求），主要是内部代码Agent和文档问答（平均输入32K词元），要求首字延迟在5秒以内、单路生成速度不低于25 token/s，团队只有1名兼职运维。\"}, {\"question\": \"代码与知识库问答的上下文规模与检索方式（如单次注入多长代码/文档、是否有RAG、仓库级索引大小）？这直接决定长上下文显存与KV Cache占用。\", \"answer\": \"单次会话上下文平均32K词元、峰值128K词元，知识库走RAG召回片段拼进提示词，代码助手直接走多轮Agent工具调用（高前缀缓存命中），没有强制信创国产卡硬要求，优先看好不好部署维护。\"}]",
+  "style_sample": "",
   "config": {
     "mode": "B",
     "profile": "parallel-fast",
@@ -13,384 +13,244 @@
     "timeout": 15,
     "model_timeout": 120,
     "max_calls": 32,
-    "max_tokens": 16384,
-    "deadline": 600.0,
+    "max_tokens": 8192,
+    "deadline": 600,
     "model": "deepseek-flash"
   },
-  "created_at": "2026-10-20T04:10:20.836152+00:00",
+  "created_at": "2026-10-20T13:11:07.509388+00:00",
   "sections": [
     {
       "id": "P1",
-      "title": "结论：首版选 DeepSeek API，但只在非敏感白名单上跑通",
-      "body": "如果这两天就要定路线，我建议首版走 DeepSeek 云端 API，并先设一道硬性白名单：只有非敏感文档可以入库，客户合同和个人信息类文档这一版完全不接。这样取舍，是因为在“两周、一名后端工程师”的条件下，云端路线剩下的工程量几乎只有检索和权限，模型服务不用自己搭。本地部署 Qwen 则要把模型下载、推理引擎安装、显存调参和服务端口暴露都压在同一个人身上 [E12][E13][E14]，而这些在第一版里不产生用户价值。用“敏感文档先不接”换上线速度，等检索和权限跑稳，再评估本地化。本文没有实测两条路线的吞吐、延迟或显存占用，规模判断要靠你们自己的小规模验收。"
+      "title": "先给结论：按 200 万预算与现有证据，倾向 4×RTX PRO 6000 + GLM-5.3-Flash",
+      "body": "- 推荐方案：在约 200 名研发人员、峰值 10 到 15 路同时生成、首字延迟低于 5 秒、单路生成不低于 25 token/s 的目标下，按目前能看到的证据，倾向选择 4 卡 RTX PRO 6000 工作站运行 GLM-5.3-Flash；它的可部署确定性明显高于昇腾 910B 一体机运行满血 DeepSeek-V4.1-Flash-1017。\n- 推荐的适用前提：真正的决定因素是模型选型能否落到这一硬件档位。满血 552B 模型的检查点约 511 GB（476 GiB）[E1]，公开 vLLM 配方的最低显存约 614 GB，并需将 196B Engram 稀疏参数卸载到主机内存 [E2][E9]；4 张 96GB 卡合计 384GB，本身装不下这一套配置。因此该推荐只在“不要求满血 DeepSeek-V4.1-Flash、可接受 GLM-5.3-Flash”这一前提下成立。\n- 采购前必须验证的风险：以上测算来自 NVIDIA 平台的公开配方，并没有昇腾 910B 的实测数据；昇腾能否运行该模型需以官方模型支持列表核验 [E8]。同时，4×RTX PRO 6000 方案在本输入中同样缺少该机型运行 GLM-5.3-Flash 的实测吞吐与延迟数据，采购前需做 POC 核验。"
     },
     {
       "id": "P2",
-      "title": "两条首版路线的关键路径差异",
-      "body": "云端路线的关键路径是：文档摄取与分块、向量与关键词检索、把召回片段发给 DeepSeek 生成答案、再做引用展示。开源样本里有现成的三段式实现：抽取 PDF 文本、用 HuggingFace Embeddings 向量化写入 ChromaDB、查询时召回相关片段、再送给外部 LLM 生成答案 [E8][E9]。注意这条链路里，召回出来的原文会离开内网 [E9]，所以白名单必须在入库和检索之前拦住，不能靠事后检查。本地路线的关键路径多出三步：用 vLLM 把 Qwen 服务化成 HTTP 接口（示例是通过 tensor-parallel-size 设并行度）[E11]，从模型仓库下载权重 [E13]，以及处理推理服务的网络暴露和访问控制 [E14]。这两条路线的检索层、权限层和引用逻辑其实可以共用，差别主要在生成侧是调外部接口还是调内网服务，所以第一版按 API 设计、把生成调用抽象成一个可替换的客户端，后面换本地模型不会推翻前面的工作。"
+      "title": "显存不是 50 人并发的瓶颈，权重与加载路径才是",
+      "body": "在 4 卡 H200 TP4 的参考配置里，卸载后约 314GB 权重常驻显存，KV 按约 890 字节/令牌估算，单会话 1M 上下文约占 890MB，剩余显存可覆盖 100 多个并发会话 [E10]。按你们的实际口径，平均 32K、峰值 128K 令牌，峰值十几路同时生成，KV 占用远低于这个量级。这说明真正的约束集中在两点：一是 552B 权重本身要占用的显存容量，二是 Engram 需要依赖 CPU offload 才能在小显存卡上做 TP4 [E3]。GLM-5.3-Flash 是 320B 总参、18B 激活，权重体量约为前者的六成，且支持 FP8、INT4；在 4×96GB 的工作站范围内，腾出 KV 的余地明显更大。但这一判断属于推算：证据中没有 GLM-5.3-Flash 在 4×RTX PRO 6000 上的显存实测，也没有昇腾 910B 的显存占用数据。"
     },
     {
       "id": "P3",
-      "title": "检索：混合召回，元数据是引用的地基",
-      "body": "中文为主的产品手册和研发规范，单靠向量检索容易漏掉型号、命令、术语这类精确匹配。样本项目的做法是递归字符分块加重叠 [E2]，但它把 BM25 加向量嵌入的混合召回列为待改进项，说明这不是现成能力，要自己补 [E10]。首版我建议直接在召回层做向量加关键词的混合，关键词侧用适合中文的分词。引用能不能定位，取决于入库时有没有把元数据写进每个分块：来源文件名、页码、章节、分块 ID [E4]。这件事必须在摄取阶段做，不能等答案生成后回填。一个现实风险是，按字符切分本身不保证段落和 PDF 页码边界完整 [E2]，所以对 PDF 要按页抽取再切，跨页片段要记录起止页。开源参考项目用了 pypdf 和 docx2txt 解析 txt、pdf、docx [E1]，但没有说明是否保留页码和段落定位，这一点不能照搬，要自己加。"
+      "title": "算子适配：昇腾路线的未知项多于 CUDA 路线",
+      "body": "昇腾侧的推理软件栈是 MindIE，文本生成的服务化路径为 MindIE Motor 对接 vLLM-Ascend，而不是原生 CUDA 版 vLLM [E5][E6]。这意味着模型要跑起来，FlashAttention、MoE 路由、FP8/FP4 量化 GEMM 等算子都需要有 Ascend 版本或相应回退，而提供的资料里没有 V4.1-Flash 或 GLM-5.3-Flash 在昇腾上的算子覆盖清单，官网也仅指向模型支持列表 [E8]。相对而言，V4.1-Flash 的公开部署配方建立在 NVIDIA Hopper/Blackwell 与 vLLM 之上 [E9]，GLM-5.3-Flash 亦有公开的多卡部署教程，但该来源正文仅有 176 字符，无法提取有效技术细节。因此，在“适配确定性”这一维度上，昇腾方案目前只能定性为“需要 POC 验证”，不能给出可信的算子支持结论；把 552B 混合 FP8+FP4 精度的模型首次迁到昇腾，风险与工期都应留足余量。"
     },
     {
       "id": "P4",
-      "title": "资料更新：全量重建先能跑，增量与失效要设计",
-      "body": "5000 份文档、10 人使用，首版可以把索引重建做成可触发的后台任务，不必一开始就做复杂增量。样本项目在文档上传或删除时用子进程异步重建整个语义库 [E3]，这个做法简单、行为可预期，适合两周版本；代价是每次变更都是全量重建，5000 份文档重建一次要多久没有材料可依，必须实测 [E3]。同时要防“更新后索引陈旧”这个坑：删除和修改文档必须走同一个入口触发重建，不能让员工直接改共享盘里的文件而索引不知情。如果实测发现全量重建太慢，第二版再引入按文档版本号做差量重建和旧片段失效。首版至少要保证一个语义：文档删除后，旧片段不能再被召回。"
+      "title": "吞吐与延迟：只能做区间判断，不能给出承诺值",
+      "body": "能直接引用的实测只来自 8 卡 B200 节点上运行 284B 的 V4-Flash（前代，非 V4.1-Flash）：单用户 272 tok/s，8 并发 170 tok/s，16 并发 140 tok/s，32 并发 116 tok/s，首 token 延迟 0.64 秒 [E11]。据此可以保守推断：在峰值 10 到 15 路并发、单路 25 tok/s 的要求下，主流 NVIDIA 平台余量很大；但这段数据不能直接外推到 552B 的 V4.1-Flash，也不能外推到昇腾 910B。对 GLM-5.3-Flash 而言，32 层激活规模较小，专家激活参数只有 18B，理论上单路解码速度优于 552B 模型，但缺少同口径实测。首字延迟低于 5 秒在 RAG 场景下还受检索与 32K 长输入预填充影响，这部分延迟与模型平台无关，应单独计入端到端预算。"
     },
     {
       "id": "P5",
-      "title": "权限：检索前按项目过滤，不能只靠提示词",
-      "body": "按你们的设定，非敏感文档也不能全员可见，首版至少两个项目隔离。这里的核心原则是权限过滤发生在召回之前，而不是把权限写进提示词让模型自己守规矩。样本项目的进阶架构里把 RBAC、部门权限和文档权限列为结构组件 [E6]，但那是完整阶段的设计，不是两周能落地的全部内容，首版可以简化为“用户—项目”白名单：入库时给每个分块打项目标签，查询时按用户所属项目在向量和关键词检索里都加过滤条件。只过滤向量检索、忘了关键词召回，是典型的越权漏口。验收口径就一条：用 A 项目的账号问 B 项目文档里的具体内容，答案里不能出现该内容，引用里也不能出现该文件。外部 API 路线下还要加一层输入侧拦截，样本材料建议用输入过滤和分类分级防止敏感内容外发 [E18]，落地上就是在文档入库和用户提问两个入口各放一道白名单检查。"
+      "title": "运维成本：一人兼职运维，冷启动与版本管理要算进 TCO",
+      "body": "满血 V4.1-Flash 的首次加载非常慢，vLLM 配方为此把引擎就绪超时设为 3600 秒 [E4]；在 8 卡 B200 上同时加载 GLM-5.3-Flash 与 V4-Flash 冷启动约 29 分钟，仅 GLM-5.3 约 16 分钟，启用并行权重加载后 V4-Flash 可降到约 1 分钟 [E12]。对只有一名兼职运维的团队来说，这意味着故障恢复、升级回滚、机房断电后的重启都需要预留窗口，而且 511GB 的检查点在存储与分发上的负担也更重 [E1]。昇腾一侧则要额外承担 CANN、MindIE、驱动固件之间的版本对应关系；昇腾文档单独设有版本说明，说明兼容管理是常规工作 [E7]。两种方案在这一点上的差别更多体现在人力与生态上：CUDA 与 vLLM 的社区资料更丰富，遇到问题更容易搜到现成解法；昇腾的排障路径更依赖官方支持与厂商服务。"
     },
     {
       "id": "P6",
-      "title": "本地 Qwen 路线：能做，但两周内不是一个人的活",
-      "body": "如果公司后面必须让敏感文档也进问答，本地部署是方向，因为本地推理可以让文档内容全程不出内网 [E16]。但首版就要本地化，需要正视几个工程量：vLLM 要装、模型权重要下载落地 [E12][E13]，推理端点默认只监听本机 8000 端口，接内网试用还要处理网络暴露与访问控制，而权限隔离不在推理服务层完成 [E14]；用容器方式跑时，共享内存等参数配错会报难以定位的运行时错误 [E20]；显存利用率和并发数需要显式调参，单卡并发有拐点，得从小并发往上一路压测找 [E19][E22]。这些经验数据来自视觉模型和特定配置，不能直接换算成你们双 24GB 卡跑文本模型的表现，我不做这个换算。对一名后端工程师来说，这条路线更适合作为试用期之后、有明确敏感文档需求时的二期项目。"
-    },
-    {
-      "id": "P7",
-      "title": "要不要混合路线：现在不必",
-      "body": "非敏感走云端、敏感走本地的混合架构在技术上成立，样本材料也把它列为兼顾安全与成本的方案 [E17]。但它需要数据分级和自动路由两套额外机制 [E17]，对一个两周上线、单人维护的团队来说，这是把两条路线的复杂度叠加而不是折中。首版的正确做法是用白名单物理隔离：敏感文档根本不进系统，也就不存在错误路由的风险。等试用验证了检索质量和使用意愿，再按“哪些文档必须本地”来划分二期范围。另需提示，云端 API 的数据保留政策，材料只提供了来源自述称默认保留 30 天、企业版可签 DPA [E15]，这是二手描述而非一手条款，如果评审会要对外承诺数据边界，应直接向服务方索取条款原文再定。"
-    },
-    {
-      "id": "P8",
-      "title": "最容易踩的五个坑与验收口径",
-      "body": "按风险排序：第一，权限过滤只做在向量检索上、漏了关键词侧，导致跨项目召回；第二，PDF 按字符切分破坏页码，答案引用点不到原页，这是分块策略问题不是模型问题 [E2][E4]；第三，更新链路不统一，删除的文档仍被召回 [E3]；第四，外部 API 误发敏感内容，必须靠入库和提问两个入口的前置白名单拦，不能靠人自觉 [E18][E9]；第五，如果后续转本地，显存和并发没有实测就按经验值上线，可能一压测就排队 [E22]。验收就按你们说的 10 人小规模试用，看两件事：随机抽问能不能定位到文件和段落（PDF 到页），以及两个项目之间互相提问不串数据。吞吐和延迟这一版只记录不承诺，等有了真实使用数据再定规模。"
-    },
-    {
-      "id": "P9",
-      "title": "两周内的可执行第一步",
-      "body": "第 1 周先定两件事：文档白名单和项目标签规则，把两个项目的非敏感文档圈出来，明确“谁属于哪个项目”；同时把摄取管线做出来，保证每个分块带文件名、页码、章节和项目标签 [E4]。第 2 周把检索问答链路串起来，生成侧先接 DeepSeek API，接之前完成入库白名单和提问侧输入检查两道拦截。检索层用向量加关键词混合 [E10]，索引重建先用异步全量重建跑通 [E3]，同时记录单次重建耗时。最后用 10 人试用做验收，按上一段的两个口径判定是否进入下一阶段，并把“是否上本地 Qwen”作为试用结论之后的独立决策，不压进这两周。"
+      "title": "200 万预算的分配与采购前必须实测的清单",
+      "body": "提供的证据不包含昇腾 910B 一体机与 4×RTX PRO 6000 工作站的报价、整机功耗、互联带宽和维保价格，因此无法判断 200 万是否够用，也无法做严格的 TCO 对比。建议在采购前先完成以下几项验证，并写入验收口径：一是用你们的真实负载（32K 平均输入、128K 峰值、峰值 15 路并发、RAG 拼接、多轮 Agent 高前缀缓存命中）跑测，记录首字延迟、单路 tok/s、P95 延迟；二是核实目标模型在所选平台官方支持列表中的状态与量化格式，尤其是 V4.1-Flash 在昇腾上的 Engram 卸载与 FP4 算子支持 [E8][E9]；三是记录冷启动时间与故障重启时间，并确认是否在可接受的运维窗口内 [E4][E12]；四是让供应商就 3 年维保、备件与现场支持报价，把存储、网络、供电改造一并计入。若 POC 实测显示昇腾能稳定运行 V4.1-Flash 且延迟达标，则可重新评估；在此之前，以 GLM-5.3-Flash 加 CUDA 工作站作为首选，是风险更低的路径。"
     }
   ],
   "revision": 1,
   "alignment": {
-    "questions": [],
+    "questions": [
+      "“DeepSeek-V4.1-Flash-1017（552B）”与“GLM-5.3-Flash（320B）”是否为贵方内部或特定渠道的模型代号/版本？能否提供模型卡、上下文长度、量化格式（BF16/FP8/INT8）、是否MoE及激活参数量等规格，否则吞吐与显存测算只能做区间估算。",
+      "50人并发的口径是同时在线的峰值请求数，还是50路持续生成（如每人长文总结/代码补全）？期望的SLA是什么（首token延迟、每用户输出速度token/s、可用性）？",
+      "代码与知识库问答的上下文规模与检索方式（如单次注入多长代码/文档、是否有RAG、仓库级索引大小）？这直接决定长上下文显存与KV Cache占用。"
+    ],
     "plan": [
-      "先按两周最小试用倒排关键路径：第1周确定文档摄取与权限模型（项目级隔离、非敏感文档白名单），第2周在单台双24GB显卡服务器上跑通检索问答链路并做10人小规模验收，不做全面性能压测。",
-      "给出云端API与本地开源模型两条首版路线对比：云端侧重最快上线、接口稳定但敏感文档无法接入；本地侧重数据不出内网、需单名后端工程师承担部署与运维，二者均需实测吞吐与显存占用后再定规模，材料不支持给出价格与性能数字。",
-      "设计检索层：中文为主的分块与向量检索加关键词混合召回，入库时保留文件、段落与PDF页码元数据，作为引用溯源的基础；首版不要求复杂前端跳转，只保证答案可定位到文件与段落。",
-      "设计资料更新与权限：建立文档版本与增量重建索引流程，删除/变更文档需同步失效；按项目授权至少两个项目隔离，检索前按用户项目权限过滤而非只靠提示词约束，客户合同与个人信息类文档首版不接入。",
-      "列出首版最易踩的坑与验收口径：权限过滤遗漏导致越权召回、PDF分块破坏页码定位、更新后索引陈旧、单机双卡显存与并发不足需实测、外部API误发敏感内容需白名单前置拦截；验收以10人试用中引用可定位、项目间不串数据为准。"
+      "梳理硬件前置约束：昇腾910B一体机与4×RTX PRO 6000工作站的整机功耗、供电、机房散热、显存总量与互联带宽，核对200万预算是否含存储、网络与三年维保。",
+      "分别核对目标模型在两种平台上的可运行性：权重格式与量化支持、算子覆盖（FlashAttention/MoE路由/量化GEMM）、推理框架版本（CANN+MindIE 对比 CUDA+vLLM/SGLang/TensorRT-LLM）及已知未支持算子的回退路径。",
+      "按MoE激活参数与KV Cache建模，对“50路并发、给定输入/输出长度”做显存与吞吐区间测算，给出首token延迟和单路输出速度的估算及不确定性来源。",
+      "对比运维成本与风险：驱动/固件升级节奏、模型适配与调优人力、故障备件、国产化供应链与生态成熟度、长期升级路径（更大模型或更多并发时的扩展方式）。",
+      "产出决策矩阵与建议：按“适配确定性、吞吐/延迟、TCO、扩展性、风险”加权，给出首选方案、适用条件与需要采购前实测的验证清单（POC指标与验收口径）。"
     ],
     "assumptions": [
-      "首版嵌入式向量库或单机向量数据库即可满足5000份文档、10人并发的量级，具体选型待实测。",
-      "双24GB显卡服务器可承载本地开源模型的推理服务，但可用并发与响应时间需实测确认，报告中标注为待验证。",
-      "以项目ID作为权限隔离的最小单位，用户与项目归属由现有目录或身份系统同步，首版可用手工配置。",
-      "中文分块以段落为基本单位，PDF按页保留页码元数据，暂不处理扫描件OCR。",
-      "两周内不训练或微调模型，仅使用开源模型或云端API的现成能力。"
+      "200万为硬件及基础配套（不含人力与软件授权）的一次性预算上限，允许在两方案间浮动配置。",
+      "50人并发按峰值同时在线的问答/代码助手会话估算，非50路持续满载长文本生成。",
+      "部署形态为单机私有化，暂不要求多机集群或高可用双活；知识库以RAG检索注入为主，单次上下文在中等长度量级（约8K–32K tokens）。",
+      "模型以BF16/FP8混合精度部署，量化方案可由实施方在保精度前提下选择。",
+      "两套平台均以其官方主推推理栈为准（昇腾侧CANN+MindIE，NVIDIA侧CUDA+vLLM或同类），具体版本由POC确定。"
     ]
   },
   "gap_checks": [
     {
-      "queries": [
-        "Qwen2.5 本地部署 24GB 双卡 vLLM 并发吞吐 中文 推理服务",
-        "DeepSeek API 数据隐私 企业 文档 上传 数据处理政策"
-      ],
-      "reason": "已有证据覆盖摄取、分块、元数据、更新与权限设计，但两处会直接影响两周上线决策的核心事实仍缺：一是本地部署在双24GB卡上可承载的模型规模与10人并发可行性无任何材料支撑（用户明确要求不得编造显存/吞吐数据），二是DeepSeek API侧的数据留存与隐私条款无证据、上一轮查询仅泛泛搜过。这两点若不能澄清，报告只能给方向性建议而无法支撑评审结论。"
+      "queries": [],
+      "reason": "现有证据已能支撑关键结论：V4.1-Flash（552B，约511GB权重）需多卡大显存或CPU卸载Engram，4×96GB（384GB）明显不足且官方验证路径为NVIDIA+vLLM；GLM-5.3-Flash（320B/18B激活）在CUDA+vLLM/SGLang路径更确定；昇腾侧需MindIE/vLLM-Ascend适配且具体模型支持列表未核验。50人并发（峰值10–15路）、32K/128K上下文下KV占用非瓶颈，首token<5s与25tok/s要求可从实测区间合理推断。剩余缺口（昇腾对两模型的确切算子覆盖与实测吞吐）属于必须POC实测而非再检索可解决，继续搜索边际收益低。"
     }
   ],
   "status": "complete",
   "evidence": [
     {
       "source_id": "S1",
-      "quote": "Built a flexible data preprocessing layer utilizing pypdf and docx2txt to parse and transform unstructured enterprise files (.txt, .pdf, .docx) into standardized LangChain document schemas.",
-      "start": 426,
-      "end": 615,
-      "claim": "该项目用 pypdf/docx2txt 把 txt、pdf、docx 解析为统一的 LangChain 文档结构，可作为首版文档摄取层的参考实现，但原文未提及按段落或PDF页码保留定位元数据。",
-      "conditions": "对象为该开源项目的摄取流程；支持格式限 txt/pdf/docx；是否保留页码、段落定位未说明；文档规模与中文占比未说明。",
+      "quote": "The checkpoint is roughly 511 GB on disk (476 GiB), which breaks down as:",
+      "start": 8718,
+      "end": 8791,
+      "claim": "仅权重文件就约511 GB（476 GiB），说明满血DeepSeek-V4.1-Flash的存储与显存容量需求远高于320B级模型，单机96GB×4方案需先核对能否容纳。",
+      "conditions": "对象为DeepSeek-V4.1-Flash-1017检查点（含MXFP4专家、FP8 Engram表与块缩放）；具体磁盘/显存口径为原文所述，未说明与昇腾910B一体机的对应关系",
       "date": "",
       "stance": "context",
       "id": "E1"
     },
     {
       "source_id": "S1",
-      "quote": "Integrated RecursiveCharacterTextSplitter to dynamically slice large documents into semantic chunks with controlled overlapping, maximizing prompt utilization while minimizing information fragmentation.",
-      "start": 618,
-      "end": 820,
-      "claim": "该项目采用带重叠的递归字符分块，可作为中文文档分块的基础方案，但仅靠字符切分不保证段落与页码边界完整，需自行补充定位元数据。",
-      "conditions": "分块参数（chunk 大小、重叠长度）未给出；是否针对中文优化未说明；对PDF页码保持的影响未说明。",
+      "quote": "vram_minimum_gb: 614 is that total times the schema's 1.2 headroom factor. It fits\none GB200 NVL4 tray (768 GB) at TP4, or one 8-GPU H200 node (1128 GB) with room for\nKV cache.",
+      "start": 9281,
+      "end": 9457,
+      "claim": "原文给出的最低显存约614 GB，参考部署形态是单托盘768 GB或8卡H200节点，侧面说明4张96GB（共384GB）不足以按原文配置承载该模型。",
+      "conditions": "针对DeepSeek-V4.1-Flash在原文所列NVIDIA平台配置（GB200 NVL4 TP4、H200 8卡）；未提及昇腾910B与RTX PRO 6000的适配与显存测算",
       "date": "",
-      "stance": "context",
+      "stance": "counter",
       "id": "E2"
     },
     {
       "source_id": "S1",
-      "quote": "When a document is programmatically uploaded or deleted, the system executes an automated asynchronous background script using Python's subprocess engine to reconstruct the semantic database.",
-      "start": 965,
-      "end": 1156,
-      "claim": "该项目在文档上传或删除时异步触发索引重建，可作为“资料更新后索引同步失效/重建”的工程做法参考；但每次全量重建对5000份文档的耗时未说明，需实测。",
-      "conditions": "更新方式为通过 FastAPI 接口程序化上传/删除触发；重建为整库重建而非明确增量；单次重建耗时与并发影响未说明。",
+      "quote": "On H200, Tensor Parallel uses the TP4 default with Engram CPU offload\n(--engram-config '{\"cpu_offload\":true}'). The Engram tables move to pinned\nhost DRAM and are read through UVA, so the output is unchanged.",
+      "start": 20045,
+      "end": 20253,
+      "claim": "原文方案依赖将Engram表卸载到主机内存（CPU offload）才能在较小显存卡上做TP4，属于额外的部署配置坑点与运维复杂度。",
+      "conditions": "NVIDIA H200、TP4、vLLM配置；仅说明输出不变，未给出延迟/吞吐影响数据，也未涉及昇腾或RTX PRO 6000工作站",
       "date": "",
       "stance": "context",
       "id": "E3"
     },
     {
-      "source_id": "S2",
-      "quote": "Store metadata for every chunk:\n{\n  \"source\": \"support_policy.pdf\",\n  \"page\": 3,\n  \"section\": \"2.3 Return rules\",\n  \"chunk_id\": \"policy_003_002\"\n}",
-      "start": 10425,
-      "end": 10571,
-      "claim": "分块级别保留来源文件名、页码、章节与分块ID等元数据，是实现答案可定位到文件与段落（PDF带页码）的工程基础。",
-      "conditions": "原文为通用RAG实践建议；未限定文档规模、语言或部署方式；未说明页码在跨页分块下的精确性",
+      "source_id": "S1",
+      "quote": "Expect a long first load: VLLM_ENGINE_READY_TIMEOUT_S=3600 is set for that reason.",
+      "start": 10726,
+      "end": 10808,
+      "claim": "首次加载耗时很长，原文需要把引擎就绪超时设为3600秒，说明部署与重启运维成本不可忽略。",
+      "conditions": "vLLM部署DeepSeek-V4.1-Flash，具体硬件平台未在此句限定；未给出实际加载时长与昇腾平台对比",
       "date": "",
-      "stance": "support",
+      "stance": "context",
       "id": "E4"
     },
     {
-      "source_id": "S2",
-      "quote": "For version 1, use a local embedding model + FAISS:",
-      "start": 10909,
-      "end": 10960,
-      "claim": "首版可用本地嵌入模型加本地FAISS向量库搭建检索层，这一路径不依赖外部API，可避开非敏感以外文档外发的争议。",
-      "conditions": "原文面向版本1最小实现；示例为BAAI/bge-small-zh-v1.5与faiss-cpu，未给出10人并发、5000份文档下的性能与显存数据",
-      "date": "",
-      "stance": "support",
+      "source_id": "S3",
+      "quote": "MindIE（Mind Inference Engine，昇腾推理引擎）是基于昇腾硬件的运行加速、调试调优、快速迁移部署的高性能AI推理引擎。",
+      "start": 4561,
+      "end": 4632,
+      "claim": "昇腾平台上的模型推理需依赖 MindIE 这一专门推理引擎，说明昇腾路线的软件栈与 CUDA 生态不同，部署与调优需围绕 MindIE 展开。",
+      "conditions": "对象为昇腾硬件推理场景；适用具体型号、CANN 版本、预算与并发要求均未说明。",
+      "date": "2026/08/13",
+      "stance": "context",
       "id": "E5"
     },
     {
-      "source_id": "S2",
-      "quote": "| Permission | RBAC + department permissions + document permissions |",
-      "start": 4266,
-      "end": 4335,
-      "claim": "权限控制被列为较完整阶段的结构组件，包含RBAC、部门权限与文档权限，可作为按项目隔离与检索前权限过滤的设计参考。",
-      "conditions": "该行出现在原文的进阶架构建议表中，非首版最小方案；原文未给出过滤实现细节、是否检索前过滤及测试验证方式",
-      "date": "",
+      "source_id": "S3",
+      "quote": "[大语言模型推理场景](https://www.hiascend.com/document/detail/zh/mindie/310/quickstart/docs/zh/user_guide/quick_start_motor.md)：MindIE 的文本生成推理场景，通过 MindIE Motor 对接vLLM-Ascend，实现文本生成推理的服务化部署与端到端推理全流程加速。",
+      "start": 4848,
+      "end": 5040,
+      "claim": "昇腾侧的大模型文本生成服务化部署路径为 MindIE Motor 对接 vLLM-Ascend，即昇腾方案在服务化层仍需走 Ascend 适配版 vLLM 而非原生 CUDA 版 vLLM。",
+      "conditions": "文档版本 3.1.0；具体支持的模型列表、量化格式与并发能力需另查模型支持列表，页面未给出。",
+      "date": "2026/08/13",
       "stance": "context",
       "id": "E6"
     },
     {
       "source_id": "S3",
-      "quote": "This project implements a Retrieval-Augmented Generation (RAG) system for document-based question answering using:\n- DeepSeek-R1 (via Groq) for fast & efficient AI-powered responses.\n- ChromaDB for storing and retrieving document embeddings.",
-      "start": 0,
-      "end": 241,
-      "claim": "该开源RAG项目采用ChromaDB做向量存储，并通过Groq托管的DeepSeek-R1生成答案，可作为云端API路线的检索问答链路参考。",
-      "conditions": "对象为单PDF上传的演示项目；模型经Groq第三方托管而非DeepSeek官方API；未说明内网部署、权限控制与多项目隔离；未说明规模与并发",
-      "date": "",
+      "quote": "[版本说明](https://www.hiascend.com/document/detail/zh/mindie/310/releasenote/docs/zh/release_note_motor.md)",
+      "start": 5227,
+      "end": 5331,
+      "claim": "昇腾推理软件栈提供独立的版本说明文档，暗示版本与驱动/固件需按版本对应维护，运维上存在版本兼容管理成本。",
+      "conditions": "仅为文档导航条目，未说明升级频率、兼容矩阵或对具体模型的影响。",
+      "date": "2026/08/13",
       "stance": "context",
       "id": "E7"
     },
     {
       "source_id": "S3",
-      "quote": "- Upload a PDF file.\n- Extract text and convert it into vector embeddings using HuggingFace.\n- Store embeddings in ChromaDB for efficient retrieval.\n- Retrieve relevant sections from ChromaDB when a user asks a question.",
-      "start": 1471,
-      "end": 1691,
-      "claim": "该项目的摄取流程为：抽取PDF文本、用HuggingFace Embeddings向量化、写入ChromaDB、查询时召回相关片段，与首版“摄取-检索-生成”三段式路线一致。",
-      "conditions": "仅针对PDF单文件场景；未说明分块策略、页码元数据保留与增量更新机制；未说明中文文档效果",
-      "date": "",
+      "quote": "[模型支持列表](https://www.hiascend.com/developer/models)",
+      "start": 5627,
+      "end": 5678,
+      "claim": "昇腾是否支持 DeepSeek-V4.1-Flash-1017 等具体模型，需通过官方模型支持列表核验，页面本身未列出任何具体模型名。",
+      "conditions": "该页面未提供任何模型名称、量化格式或算子覆盖信息，无法据此判断目标模型的适配确定性。",
+      "date": "2026/08/13",
       "stance": "context",
       "id": "E8"
     },
     {
-      "source_id": "S3",
-      "quote": "- Retrieve relevant sections from ChromaDB when a user asks a question.\n- Send retrieved data to DeepSeek-R1 (Groq) LLM for final answer generation.",
-      "start": 1620,
-      "end": 1768,
-      "claim": "该实现把召回的文档片段直接发送给外部托管的LLM生成答案，说明云端API路线下检索到的原文会离开内网，因此客户合同与个人信息类文档不能进入该链路，需白名单前置拦截。",
-      "conditions": "样本项目把内容发送至Groq云端；是否保留日志、数据留存政策未说明；不涉及权限过滤与项目隔离",
+      "source_id": "S4",
+      "quote": "Minimum hardware: DeepSeek V4.1-Flash (552B MoE, ~511 GB checkpoint) runs on 4x H200 SXM5 (564 GB, TP4) or 2x B200 (384 GB, TP2) in the 2026 vLLM recipe, with Engram's 196B sparse parameters offloaded to CPU RAM.",
+      "start": 847,
+      "end": 1059,
+      "claim": "该部署指南给出的 V4.1-Flash 最小配置为 4 张 H200 SXM5（564GB，TP4）或 2 张 B200（384GB，TP2），并需把 Engram 的 196B 稀疏参数卸载到 CPU 内存；这说明该模型官方验证路径是 NVIDIA Hopper/Blackwell + vLLM，文中未涉及昇腾 910B 或 MindIE 的可运行性。",
+      "conditions": "对象为 DeepSeek-V4.1-Flash（552B MoE）；平台为 2026 年 vLLM 配方下的 NVIDIA H200/B200；Engram 参数卸载至 CPU RAM；未说明昇腾平台、量化格式替代方案及 50 并发场景。",
       "date": "",
-      "stance": "support",
+      "stance": "context",
       "id": "E9"
     },
     {
-      "source_id": "S3",
-      "quote": "- 📊 Improve retrieval accuracy using hybrid search (BM25 + embeddings).",
-      "start": 2066,
-      "end": 2137,
-      "claim": "该项目把BM25关键词检索与向量检索的混合召回列为待改进项，说明其当前版本仅用向量检索；对中文为主的文档，混合召回属于首版需自行补充而非现成能力。",
-      "conditions": "列为“计划改进”而非已实现功能；未说明中文分词与BM25适配；未给出效果数据",
+      "source_id": "S4",
+      "quote": "| Text-only, max | 1M tokens | ~314 GB | ~890 MB/session | 4x H200 SXM5 (TP4) | Headroom still covers 100+ concurrent sessions |",
+      "start": 6022,
+      "end": 6150,
+      "claim": "在 4 卡 H200 SXM5 方案下，扣除卸载后约 314GB 权重常驻显存，FP4 KV 约 890 字节/令牌，单会话 1M 上下文仅占约 890MB，剩余显存可覆盖 100+ 并发会话；即显存瓶颈主要在权重而非 KV，这对 50 人并发（峰值 10–15 路）的显存测算偏宽松。",
+      "conditions": "仅文本输入；1M 令牌上下文；4x H200 SXM5 TP4；KV 按 890 B/token 估算；并发会话数指显存可容纳数，非吞吐/SLA 保证；未给出延迟与吞吐数据。",
       "date": "",
-      "stance": "context",
+      "stance": "support",
       "id": "E10"
     },
     {
       "source_id": "S4",
-      "quote": "vllm serve Qwen/Qwen2.5-Coder-32B-Instruct-AWQ --tensor-parallel-size 4",
-      "start": 688,
-      "end": 759,
-      "claim": "本地部署Qwen可走vLLM提供OpenAI兼容的HTTP推理服务，通过tensor-parallel-size参数设置张量并行度；该示例用4卡并行跑32B AWQ量化模型，说明本地路线需先把模型服务化再让应用调用接口。",
-      "conditions": "对象为Qwen2.5-Coder-32B-Instruct-AWQ，推理引擎vLLM，示例配置4路张量并行；是否适配双24GB卡、显存占用与吞吐均未说明，需实测；未涉及检索、权限或文档摄取。",
-      "date": "",
+      "quote": "Per-copy throughput came in at 272 tokens/sec for one user, 170 tok/s at 8 concurrent users, 140 at 16, and 116 at 32, with a time-to-first-token of 0.64 seconds",
+      "start": 14852,
+      "end": 15013,
+      "claim": "实测数据显示，在 8x B200 节点上运行 V4-Flash（284B 前代，非 V4.1-Flash）的单副本时，单用户 272 tok/s，8 并发 170 tok/s、16 并发 140 tok/s、32 并发 116 tok/s，首 token 延迟 0.64 秒；据此可初步判断单路 25 tok/s 的生成速度要求在 32 并发以内可满足，但该数据不能直接外推到 552B 的 V4.1-Flash 或昇腾平台。",
+      "conditions": "对象为 DeepSeek V4-Flash 0731 检查点（284B），非 V4.1-Flash；8x B200 节点、FP8 权重 + FP4 KV、1M 上下文、vLLM；每副本 2 卡；测试时间 2026-10-15；未覆盖昇腾 910B 与 GLM-5.3-Flash 的同等口径。",
+      "date": "2026-10-15",
       "stance": "context",
       "id": "E11"
     },
     {
       "source_id": "S4",
-      "quote": "pip install vllm",
-      "start": 536,
-      "end": 552,
-      "claim": "该文给出的Qwen本地部署第一步是pip安装vLLM，说明单名后端工程师维护的本地路线需自行承担推理引擎的安装与环境配置工作。",
-      "conditions": "操作对象为Linux终端或SSH连接服务器（文中提及若用Windows需另装C++ Build Tools）；未说明CUDA与驱动版本要求，也未说明安装失败时的排障成本。",
-      "date": "",
+      "quote": "the fresh 8x B200 node with empty caches took about 29 minutes to start serving GLM-5.3-Flash and V4-Flash together, against about 16 minutes for GLM-5.3 alone, and a parallel weight loader cut V4-Flash's own load time from about 25 minutes to about a minute",
+      "start": 15411,
+      "end": 15669,
+      "claim": "冷启动加载模型耗时显著：8 卡 B200 空缓存节点同时起 GLM-5.3-Flash 与 V4-Flash 约 29 分钟，仅 GLM-5.3 约 16 分钟；并行权重加载可将 V4-Flash 加载从约 25 分钟降至约 1 分钟。提示运维成本中需计入冷启动与故障恢复时间，且 511GB 的 V4.1-Flash 加载负担更重。",
+      "conditions": "8x B200 节点、空缓存冷启动；涉及 GLM-5.3-Flash 与 V4-Flash（非 V4.1-Flash）；并行权重加载为优化手段；未说明昇腾一体机或工作站场景的启动时间。",
+      "date": "2026-10-14",
       "stance": "context",
       "id": "E12"
-    },
-    {
-      "source_id": "S4",
-      "quote": "huggingface-cli download Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
-      "start": 614,
-      "end": 674,
-      "claim": "本地路线需先从模型仓库下载并落地模型权重，这一步是云端API路线不需要的额外前置工作。",
-      "conditions": "示例通过HF_ENDPOINT=https://hf-mirror.com镜像下载Qwen2.5-Coder-32B-Instruct-AWQ；权重体积、下载耗时与存储需求未说明。",
-      "date": "",
-      "stance": "context",
-      "id": "E13"
-    },
-    {
-      "source_id": "S4",
-      "quote": "端口：http://127.0.0.1:8000/v1/chat/completions",
-      "start": 824,
-      "end": 868,
-      "claim": "vLLM暴露的推理端点默认只监听本机回环地址的8000端口，接入内网试用时需另行处理网络暴露与访问控制，而权限隔离本身不在该服务层完成。",
-      "conditions": "示例以Postman在本机调用；未说明多用户并发、鉴权、按项目过滤或HTTPS配置；是否改绑到内网地址未说明。",
-      "date": "",
-      "stance": "context",
-      "id": "E14"
-    },
-    {
-      "source_id": "S5",
-      "quote": "数据保留策略： 通过 API 提交的数据默认保留 30 天用于服务监控和问题排查，用户可申请缩短保留期限甚至实时删除。企业版客户可以签署定制化的数据处理协议（DPA），以满足特定行业的合规要求。",
-      "start": 441,
-      "end": 538,
-      "claim": "该文称通过 DeepSeek API 提交的数据默认保留30天，企业版可签DPA；这支持“敏感文档不宜走外部API、且API路线需先谈数据保留条款”的判断，但为来源自述，未给出可核验的一手条款。",
-      "conditions": "对象为DeepSeek云端API；具体计费版本、企业版开通条件与DPA文本未说明；本地部署部分另述不接触数据。",
-      "date": "",
-      "stance": "support",
-      "id": "E15"
-    },
-    {
-      "source_id": "S5",
-      "quote": "在本地部署模式下，数据的完整生命周期——输入、处理、输出——都发生在企业自己的服务器上，不存在任何网络传输风险。",
-      "start": 982,
-      "end": 1038,
-      "claim": "本地部署可让文档内容不出内网，符合“含合同与个人信息的文档不发外部API”的硬约束，可作为首版只接非敏感文档时的隔离依据或二期扩展方向。",
-      "conditions": "指DeepSeek开源模型的本地部署；文中未涉及Qwen；未说明具体硬件是否够用，也未给出吞吐或显存实测。",
-      "date": "",
-      "stance": "context",
-      "id": "E16"
-    },
-    {
-      "source_id": "S5",
-      "quote": "方案二：混合云部署（平衡安全与成本）\n适用于中大型企业，兼顾安全性和灵活性：\n- 敏感数据处理：在本地私有环境中完成\n- 非敏感任务：通过 VPN 加密通道使用云端 API\n- 数据分级：根据数据敏感程度自动路由至不同环境",
-      "start": 2123,
-      "end": 2234,
-      "claim": "混合路线（非敏感走云端API、敏感走本地）在架构上可行，但需要额外的数据分级与路由机制；对只有一名后端工程师、两周上线的团队而言，这比单一路线增加实现与运维负担。",
-      "conditions": "适用于中大型企业场景的泛化描述；未给出实现细节、成本或验证数据；本文所述VPN为IPSec/WireGuard加密隧道。",
-      "date": "",
-      "stance": "context",
-      "id": "E17"
-    },
-    {
-      "source_id": "S5",
-      "quote": "建议采取以下措施：\n- 部署 DLP（数据防泄露）系统监控输入内容\n- 对敏感数据建立分类分级制度\n- 使用输入过滤器阻止特定类型的敏感信息\n- 记录所有查询日志用于审计\n- 建立 AI 使用规范并对员工进行培训",
-      "start": 6732,
-      "end": 6838,
-      "claim": "该文建议以输入过滤、分类分级和日志审计防止员工把敏感内容发到模型服务，这对应“外部API误发敏感内容需白名单前置拦截”这一首版风险点。",
-      "conditions": "针对员工使用AI的一般性建议，非针对文档问答助手的检索链路；未说明与项目级权限过滤的配合方式，也未给出落地成本。",
-      "date": "",
-      "stance": "support",
-      "id": "E18"
-    },
-    {
-      "source_id": "S6",
-      "quote": "--gpu-memory-utilization 0.90\n  ：允许vLLM最多占用90%的显存。剩下10%给CUDA context、图像特征提取的临时缓冲。对7B模型在24GB卡上，这个比例是我实测过最稳的。",
-      "start": 3848,
-      "end": 3955,
-      "claim": "在单张24GB显卡上用vLLM部署7B模型时，可通过限制显存利用率给CUDA和临时张量留余量，说明本地部署需要显式的显存调参；但该经验针对视觉语言模型，不能直接推断文本模型的显存需求。",
-      "conditions": "单卡24GB、Qwen2-VL-7B-Instruct、FP16、vLLM 0.8.x；并发与上下文长度在文中另设为batch size 1、32768上下文，非50人公司内网场景",
-      "date": "",
-      "stance": "context",
-      "id": "E19"
-    },
-    {
-      "source_id": "S6",
-      "quote": "  --shm-size=16g\n \n 这一项最容易漏。vLLM的多模态处理器在prefill阶段会大量使用共享内存做张量中转，默认的64MB根本不够，跑起来会报莫名的共享内存错误。",
-      "start": 2237,
-      "end": 2328,
-      "claim": "用Docker方式自建本地推理服务时，共享内存等容器参数配置不当会导致运行时故障，属于单名工程师维护本地部署需要预先考虑的运维细节。",
-      "conditions": "vLLM官方Docker镜像、多模态输入场景；纯文本模型是否同样需要该配置文中未说明",
-      "date": "",
-      "stance": "context",
-      "id": "E20"
-    },
-    {
-      "source_id": "S6",
-      "quote": "我建议宁可减少并发数也别轻易上量化。",
-      "start": 4716,
-      "end": 4734,
-      "claim": "量化会牺牲精度，对需要细看内容的任务尤其明显，因此在硬件允许时优先不量化、以控制并发换取质量；该取舍可类比到文档问答对引用准确性的要求，但原文未涉及文本RAG。",
-      "conditions": "文中语境为OCR、版面分析等视觉细节任务；16GB卡跑7B、4bit AWQ量化的讨论，未覆盖纯文本文档问答",
-      "date": "",
-      "stance": "context",
-      "id": "E21"
-    },
-    {
-      "source_id": "S6",
-      "quote": "MAX_WORKERS设多少。 这个数字不是越大越好。vLLM的并发能力受显存里的KV Cache限制，也受GPU算力限制。我测7B模型单卡，并发8路时吞吐就不再线性上涨了，反而开始排队。合理做法是先压测：从1路并发往上加，观察模型服务的Throughput指标和平均延迟，找到拐点，再设置爬虫的并发数。",
-      "start": 11497,
-      "end": 11649,
-      "claim": "本地单卡推理的并发能力受KV Cache和算力限制，合理做法是先小规模压测找拐点再设定并发数；这支持了首版应小规模验收、不预设吞吐数字的判断，但文中数据不可外推到该公司的文本文档场景。",
-      "conditions": "Qwen2-VL-7B单卡24GB、多模态请求；并发拐点与延迟数值仅对该配置与输入有效",
-      "date": "",
-      "stance": "support",
-      "id": "E22"
     }
   ],
   "queries": [
-    "DeepSeek API document question answering RAG data privacy enterprise",
-    "Qwen2.5 本地部署 24GB 双卡 vLLM 并发吞吐 中文 推理服务",
-    "DeepSeek API 数据隐私 企业 文档 上传 数据处理政策"
+    "DeepSeek-V4.1-Flash-1017 MoE 552B FP8 vLLM support",
+    "GLM-5.3-Flash 320B vLLM 算子支持 部署",
+    "昇腾910B MindIE 部署 大模型 算子适配 问题"
   ],
-  "effective_brief": "一家50人的软件公司准备做内部文档问答助手，应该采用DeepSeek API还是本地部署Qwen？请比较第一版的实现路线、资料更新和权限控制，以及最容易踩的坑。\n\n用户补充：\n读者是研发负责人，用途是决定两周内怎么上线内部试用版，不是写行业全景综述。\n范围：中文为主的产品手册、研发规范和运维文档，约5000份；10人同时使用。\n先接非敏感文档；包含客户合同和个人信息的文档不得发到外部API，首版可以不接。\n现有一台有两张24GB显卡的Linux服务器，只有一名后端工程师维护；不打算训练模型。\n请比较云端API与本地开源模型的工程取舍，说明检索、更新、权限和引用溯源怎么做。\n不要假装测过吞吐，也不要编模型当前价格、排行榜或显存实测数据；材料不支持就标明需要实测。\n交付自然中文、能拿去开评审会的短报告，重点是明确取舍和可执行的第一步。\n\n用户回答：\n以下是本次实验人为设定的场景参数，不是Zero或真实客户的额外口述：\n两周目标是最小可用内部试用，预留小规模验收，不包括全面性能压测。\n非敏感文档也要按项目授权，不能默认所有员工都能看；首版至少按两个项目隔离。\n引用要能定位到文件与段落，PDF尽量带页码，不要求首版做复杂前端跳转。\n按这些范围直接研究，其余实现细节采用可撤回的合理默认值，不需要再追问。\n\n研究计划：[\"先按两周最小试用倒排关键路径：第1周确定文档摄取与权限模型（项目级隔离、非敏感文档白名单），第2周在单台双24GB显卡服务器上跑通检索问答链路并做10人小规模验收，不做全面性能压测。\", \"给出云端API与本地开源模型两条首版路线对比：云端侧重最快上线、接口稳定但敏感文档无法接入；本地侧重数据不出内网、需单名后端工程师承担部署与运维，二者均需实测吞吐与显存占用后再定规模，材料不支持给出价格与性能数字。\", \"设计检索层：中文为主的分块与向量检索加关键词混合召回，入库时保留文件、段落与PDF页码元数据，作为引用溯源的基础；首版不要求复杂前端跳转，只保证答案可定位到文件与段落。\", \"设计资料更新与权限：建立文档版本与增量重建索引流程，删除/变更文档需同步失效；按项目授权至少两个项目隔离，检索前按用户项目权限过滤而非只靠提示词约束，客户合同与个人信息类文档首版不接入。\", \"列出首版最易踩的坑与验收口径：权限过滤遗漏导致越权召回、PDF分块破坏页码定位、更新后索引陈旧、单机双卡显存与并发不足需实测、外部API误发敏感内容需白名单前置拦截；验收以10人试用中引用可定位、项目间不串数据为准。\"]",
+  "effective_brief": "一家 200 人的研发企业准备在内网私有化部署代码与知识库问答助手，硬件预算 200 万以内，要求支持 50 人并发：直接买华为昇腾 910B 一体机跑满血 DeepSeek-V4.1-Flash-1017（552B），还是用 4 张 RTX PRO 6000（96GB×4）工作站跑 GLM-5.3-Flash（320B）？请对比两套方案的算子适配坑点、吞吐延迟与运维成本。\n用户补充：\n\n用户回答：\n\n[{\"question\": \"“DeepSeek-V4.1-Flash-1017（552B）”与“GLM-5.3-Flash（320B）”是否为贵方内部或特定渠道的模型代号/版本？能否提供模型卡、上下文长度、量化格式（BF16/FP8/INT8）、是否MoE及激活参数量等规格，否则吞吐与显存测算只能做区间估算。\", \"answer\": \"都是2026年8至10月最新公开开源的模型：DeepSeek-V4.1-Flash-1017是552B主干+196B Engram（预填充激活8B/解码16B，原生FP8+FP4混合精度约510GB，CSA2压缩KV，1M上下文）；GLM-5.3-Flash是320B总参/18B激活（34层KDA线性+11层DSA稀疏MLA，1M上下文，支持FP8/INT4）。去网上搜这两个英文全名就能查到。\"}, {\"question\": \"50人并发的口径是同时在线的峰值请求数，还是50路持续生成（如每人长文总结/代码补全）？期望的SLA是什么（首token延迟、每用户输出速度token/s、可用性）？\", \"answer\": \"50人日常在线办公（峰值大约10到15路同时在跑请求），主要是内部代码Agent和文档问答（平均输入32K词元），要求首字延迟在5秒以内、单路生成速度不低于25 token/s，团队只有1名兼职运维。\"}, {\"question\": \"代码与知识库问答的上下文规模与检索方式（如单次注入多长代码/文档、是否有RAG、仓库级索引大小）？这直接决定长上下文显存与KV Cache占用。\", \"answer\": \"单次会话上下文平均32K词元、峰值128K词元，知识库走RAG召回片段拼进提示词，代码助手直接走多轮Agent工具调用（高前缀缓存命中），没有强制信创国产卡硬要求，优先看好不好部署维护。\"}]\n研究计划：[\"梳理硬件前置约束：昇腾910B一体机与4×RTX PRO 6000工作站的整机功耗、供电、机房散热、显存总量与互联带宽，核对200万预算是否含存储、网络与三年维保。\", \"分别核对目标模型在两种平台上的可运行性：权重格式与量化支持、算子覆盖（FlashAttention/MoE路由/量化GEMM）、推理框架版本（CANN+MindIE 对比 CUDA+vLLM/SGLang/TensorRT-LLM）及已知未支持算子的回退路径。\", \"按MoE激活参数与KV Cache建模，对“50路并发、给定输入/输出长度”做显存与吞吐区间测算，给出首token延迟和单路输出速度的估算及不确定性来源。\", \"对比运维成本与风险：驱动/固件升级节奏、模型适配与调优人力、故障备件、国产化供应链与生态成熟度、长期升级路径（更大模型或更多并发时的扩展方式）。\", \"产出决策矩阵与建议：按“适配确定性、吞吐/延迟、TCO、扩展性、风险”加权，给出首选方案、适用条件与需要采购前实测的验证清单（POC指标与验收口径）。\"]",
   "sources": [
     {
       "id": "S1",
-      "url": "https://github.com/lindejingl-dev/Enterprise-RAG-QA",
-      "title": "GitHub - lindejingl-dev/Enterprise-RAG-QA: An enterprise-grade RAG QA system supporting TXT/PDF/DOCX ingestion, vector index auto-rebuilding, and memory-enabled chat using DeepSeek and FAISS. · GitHub",
-      "fetched_at": "2026-10-20T04:10:27.367011+00:00",
-      "content_hash": "a42b482ed48ddbcb8335d8bbe80ec6c02c87182311f122ad590fb59a91addda3",
-      "chars": 3176
+      "url": "https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash",
+      "title": "deepseek-ai/DeepSeek-V4.1-Flash | vLLM Recipes",
+      "fetched_at": "2026-10-20T13:13:57.589798+00:00",
+      "content_hash": "58ed130b1d9e1821feeba226d1004dc7214a0b6d4934ed395d902ad1c174349f",
+      "chars": 32101
     },
     {
       "id": "S2",
-      "url": "https://dev.to/cheng_zhang_45ee857b979b0/how-to-build-your-own-rag-knowledge-base-qa-system-with-deepseek-3dl9",
-      "title": "How to Build Your Own RAG Knowledge Base Q&A System with DeepSeek - DEV Community",
-      "fetched_at": "2026-10-20T04:07:18.498153+00:00",
-      "content_hash": "ee256c9d34b8963dd85683e6cd092adeda8abfe2e05930a457884451f5c1a2eb",
-      "chars": 22383
+      "url": "https://cloud.tencent.com/developer/article/2732826",
+      "title": "GLM-5.3-Flash部署完整教程：从 API、单机异构到多卡生产服务-腾讯云开发者社区-腾讯云",
+      "fetched_at": "2026-10-20T13:13:56.831910+00:00",
+      "content_hash": "45659e1b1150a866bb4ee0b3fe6a43e74d520f36fd26bc0fd6221bbde80ccff8",
+      "chars": 176
     },
     {
       "id": "S3",
-      "url": "https://github.com/AymenGabsi/rag_deepseek_groq_doc_qa",
-      "title": "GitHub - AymenGabsi/rag_deepseek_groq_doc_qa: 📄⚡ A RAG (Retrieval-Augmented Generation) Document QA system using Deepseek and Groq for fast and efficient querying over documents. Inspired by this tutorial, this project demonstrates how to set up a high-performance AI-powered question-answering system. · GitHub",
-      "fetched_at": "2026-10-20T04:10:27.573100+00:00",
-      "content_hash": "c30f9d9ef464d470ac820bc6d2f685c0e35182b3fe9fa7fac4e4990899f12e60",
-      "chars": 2458
+      "url": "https://www.hiascend.com/developer/software/mindie/document",
+      "title": "MindIE-文档-昇腾社区",
+      "fetched_at": "2026-10-20T13:14:09.335226+00:00",
+      "content_hash": "1394c0c644f3b5ef4b71ca21e24f4f809079a62418b18c32968a56089a6397a0",
+      "chars": 8948
     },
     {
       "id": "S4",
-      "url": "https://blog.csdn.net/mnyh35/article/details/149165996",
-      "title": "使用 vLLM 部署 Qwen2.5 大模型_vllm部署qwen2.5-CSDN博客",
-      "fetched_at": "2026-10-20T04:10:35.454619+00:00",
-      "content_hash": "53c5a9e93671a47f6e6136ab514dbbfa4a628725b494241e6806f53f43b69436",
-      "chars": 1043
-    },
-    {
-      "id": "S5",
-      "url": "https://freedeepseekapi.com/zh/blog/deepseek-data-privacy-security-analysis",
-      "title": "DeepSeek 数据隐私与安全性深度分析：企业用户须知 | DeepSeek AI Blog",
-      "fetched_at": "2026-10-20T04:10:37.170868+00:00",
-      "content_hash": "da6f801746b896aa8d12377d39d85e466eae96943612f4d4981b820d0ba3e411",
-      "chars": 7345
-    },
-    {
-      "id": "S6",
-      "url": "https://blog.csdn.net/weixin_29047545/article/details/168041183",
-      "title": "Qwen2-VL与vLLM部署实战：单卡多卡启动与批量推理全指南-CSDN博客",
-      "fetched_at": "2026-10-20T04:10:35.630442+00:00",
-      "content_hash": "4acb443cc788760b41e12d3859e9701769637ae7a6ce3e42aed1ac3ca82f7a02",
-      "chars": 14471
+      "url": "https://www.spheron.network/blog/deploy-deepseek-v4-1-flash-on-gpu-cloud-552b-moe-setup-2026/",
+      "title": "DeepSeek V4.1 Flash GPU Requirements: 552B MoE Image Input (2026) | Spheron",
+      "fetched_at": "2026-10-20T13:13:57.779511+00:00",
+      "content_hash": "53d7942230bcf31db4a16681efc930730a487988fefc46c7083c21bc00dbb5f0",
+      "chars": 23456
     }
   ]
 }
