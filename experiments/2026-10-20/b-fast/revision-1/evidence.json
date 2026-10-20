@@ -1,0 +1,396 @@
+{
+  "question": "一家50人的软件公司准备做内部文档问答助手，应该采用DeepSeek API还是本地部署Qwen？请比较第一版的实现路线、资料更新和权限控制，以及最容易踩的坑。\n",
+  "brief": "读者是研发负责人，用途是决定两周内怎么上线内部试用版，不是写行业全景综述。\n范围：中文为主的产品手册、研发规范和运维文档，约5000份；10人同时使用。\n先接非敏感文档；包含客户合同和个人信息的文档不得发到外部API，首版可以不接。\n现有一台有两张24GB显卡的Linux服务器，只有一名后端工程师维护；不打算训练模型。\n请比较云端API与本地开源模型的工程取舍，说明检索、更新、权限和引用溯源怎么做。\n不要假装测过吞吐，也不要编模型当前价格、排行榜或显存实测数据；材料不支持就标明需要实测。\n交付自然中文、能拿去开评审会的短报告，重点是明确取舍和可执行的第一步。\n",
+  "answers": "以下是本次实验人为设定的场景参数，不是Zero或真实客户的额外口述：\n两周目标是最小可用内部试用，预留小规模验收，不包括全面性能压测。\n非敏感文档也要按项目授权，不能默认所有员工都能看；首版至少按两个项目隔离。\n引用要能定位到文件与段落，PDF尽量带页码，不要求首版做复杂前端跳转。\n按这些范围直接研究，其余实现细节采用可撤回的合理默认值，不需要再追问。\n",
+  "style_sample": "【本项目自写的语态示例，不是客户原稿，也不是事实来源】\n先把试用范围收小。第一版只接能公开给同事看的手册，问题答不上来就给出原文链接，不急着替人做决定。这样我们能先看清两个问题：资料有没有找对，回答有没有越过资料。等这两件事跑稳，再讨论接入更多文档和自动执行。\n",
+  "config": {
+    "mode": "B",
+    "profile": "parallel-fast",
+    "query_count": 3,
+    "max_pages": 6,
+    "max_rounds": 1,
+    "concurrency": 3,
+    "timeout": 15,
+    "model_timeout": 120,
+    "max_calls": 32,
+    "max_tokens": 16384,
+    "deadline": 600.0,
+    "model": "deepseek-flash"
+  },
+  "created_at": "2026-10-20T04:10:20.836152+00:00",
+  "sections": [
+    {
+      "id": "P1",
+      "title": "结论：首版选 DeepSeek API，但只在非敏感白名单上跑通",
+      "body": "如果这两天就要定路线，我建议首版走 DeepSeek 云端 API，并先设一道硬性白名单：只有非敏感文档可以入库，客户合同和个人信息类文档这一版完全不接。这样取舍，是因为在“两周、一名后端工程师”的条件下，云端路线剩下的工程量几乎只有检索和权限，模型服务不用自己搭。本地部署 Qwen 则要把模型下载、推理引擎安装、显存调参和服务端口暴露都压在同一个人身上 [E12][E13][E14]，而这些在第一版里不产生用户价值。用“敏感文档先不接”换上线速度，等检索和权限跑稳，再评估本地化。本文没有实测两条路线的吞吐、延迟或显存占用，规模判断要靠你们自己的小规模验收。"
+    },
+    {
+      "id": "P2",
+      "title": "两条首版路线的关键路径差异",
+      "body": "云端路线的关键路径是：文档摄取与分块、向量与关键词检索、把召回片段发给 DeepSeek 生成答案、再做引用展示。开源样本里有现成的三段式实现：抽取 PDF 文本、用 HuggingFace Embeddings 向量化写入 ChromaDB、查询时召回相关片段、再送给外部 LLM 生成答案 [E8][E9]。注意这条链路里，召回出来的原文会离开内网 [E9]，所以白名单必须在入库和检索之前拦住，不能靠事后检查。本地路线的关键路径多出三步：用 vLLM 把 Qwen 服务化成 HTTP 接口（示例是通过 tensor-parallel-size 设并行度）[E11]，从模型仓库下载权重 [E13]，以及处理推理服务的网络暴露和访问控制 [E14]。这两条路线的检索层、权限层和引用逻辑其实可以共用，差别主要在生成侧是调外部接口还是调内网服务，所以第一版按 API 设计、把生成调用抽象成一个可替换的客户端，后面换本地模型不会推翻前面的工作。"
+    },
+    {
+      "id": "P3",
+      "title": "检索：混合召回，元数据是引用的地基",
+      "body": "中文为主的产品手册和研发规范，单靠向量检索容易漏掉型号、命令、术语这类精确匹配。样本项目的做法是递归字符分块加重叠 [E2]，但它把 BM25 加向量嵌入的混合召回列为待改进项，说明这不是现成能力，要自己补 [E10]。首版我建议直接在召回层做向量加关键词的混合，关键词侧用适合中文的分词。引用能不能定位，取决于入库时有没有把元数据写进每个分块：来源文件名、页码、章节、分块 ID [E4]。这件事必须在摄取阶段做，不能等答案生成后回填。一个现实风险是，按字符切分本身不保证段落和 PDF 页码边界完整 [E2]，所以对 PDF 要按页抽取再切，跨页片段要记录起止页。开源参考项目用了 pypdf 和 docx2txt 解析 txt、pdf、docx [E1]，但没有说明是否保留页码和段落定位，这一点不能照搬，要自己加。"
+    },
+    {
+      "id": "P4",
+      "title": "资料更新：全量重建先能跑，增量与失效要设计",
+      "body": "5000 份文档、10 人使用，首版可以把索引重建做成可触发的后台任务，不必一开始就做复杂增量。样本项目在文档上传或删除时用子进程异步重建整个语义库 [E3]，这个做法简单、行为可预期，适合两周版本；代价是每次变更都是全量重建，5000 份文档重建一次要多久没有材料可依，必须实测 [E3]。同时要防“更新后索引陈旧”这个坑：删除和修改文档必须走同一个入口触发重建，不能让员工直接改共享盘里的文件而索引不知情。如果实测发现全量重建太慢，第二版再引入按文档版本号做差量重建和旧片段失效。首版至少要保证一个语义：文档删除后，旧片段不能再被召回。"
+    },
+    {
+      "id": "P5",
+      "title": "权限：检索前按项目过滤，不能只靠提示词",
+      "body": "按你们的设定，非敏感文档也不能全员可见，首版至少两个项目隔离。这里的核心原则是权限过滤发生在召回之前，而不是把权限写进提示词让模型自己守规矩。样本项目的进阶架构里把 RBAC、部门权限和文档权限列为结构组件 [E6]，但那是完整阶段的设计，不是两周能落地的全部内容，首版可以简化为“用户—项目”白名单：入库时给每个分块打项目标签，查询时按用户所属项目在向量和关键词检索里都加过滤条件。只过滤向量检索、忘了关键词召回，是典型的越权漏口。验收口径就一条：用 A 项目的账号问 B 项目文档里的具体内容，答案里不能出现该内容，引用里也不能出现该文件。外部 API 路线下还要加一层输入侧拦截，样本材料建议用输入过滤和分类分级防止敏感内容外发 [E18]，落地上就是在文档入库和用户提问两个入口各放一道白名单检查。"
+    },
+    {
+      "id": "P6",
+      "title": "本地 Qwen 路线：能做，但两周内不是一个人的活",
+      "body": "如果公司后面必须让敏感文档也进问答，本地部署是方向，因为本地推理可以让文档内容全程不出内网 [E16]。但首版就要本地化，需要正视几个工程量：vLLM 要装、模型权重要下载落地 [E12][E13]，推理端点默认只监听本机 8000 端口，接内网试用还要处理网络暴露与访问控制，而权限隔离不在推理服务层完成 [E14]；用容器方式跑时，共享内存等参数配错会报难以定位的运行时错误 [E20]；显存利用率和并发数需要显式调参，单卡并发有拐点，得从小并发往上一路压测找 [E19][E22]。这些经验数据来自视觉模型和特定配置，不能直接换算成你们双 24GB 卡跑文本模型的表现，我不做这个换算。对一名后端工程师来说，这条路线更适合作为试用期之后、有明确敏感文档需求时的二期项目。"
+    },
+    {
+      "id": "P7",
+      "title": "要不要混合路线：现在不必",
+      "body": "非敏感走云端、敏感走本地的混合架构在技术上成立，样本材料也把它列为兼顾安全与成本的方案 [E17]。但它需要数据分级和自动路由两套额外机制 [E17]，对一个两周上线、单人维护的团队来说，这是把两条路线的复杂度叠加而不是折中。首版的正确做法是用白名单物理隔离：敏感文档根本不进系统，也就不存在错误路由的风险。等试用验证了检索质量和使用意愿，再按“哪些文档必须本地”来划分二期范围。另需提示，云端 API 的数据保留政策，材料只提供了来源自述称默认保留 30 天、企业版可签 DPA [E15]，这是二手描述而非一手条款，如果评审会要对外承诺数据边界，应直接向服务方索取条款原文再定。"
+    },
+    {
+      "id": "P8",
+      "title": "最容易踩的五个坑与验收口径",
+      "body": "按风险排序：第一，权限过滤只做在向量检索上、漏了关键词侧，导致跨项目召回；第二，PDF 按字符切分破坏页码，答案引用点不到原页，这是分块策略问题不是模型问题 [E2][E4]；第三，更新链路不统一，删除的文档仍被召回 [E3]；第四，外部 API 误发敏感内容，必须靠入库和提问两个入口的前置白名单拦，不能靠人自觉 [E18][E9]；第五，如果后续转本地，显存和并发没有实测就按经验值上线，可能一压测就排队 [E22]。验收就按你们说的 10 人小规模试用，看两件事：随机抽问能不能定位到文件和段落（PDF 到页），以及两个项目之间互相提问不串数据。吞吐和延迟这一版只记录不承诺，等有了真实使用数据再定规模。"
+    },
+    {
+      "id": "P9",
+      "title": "两周内的可执行第一步",
+      "body": "第 1 周先定两件事：文档白名单和项目标签规则，把两个项目的非敏感文档圈出来，明确“谁属于哪个项目”；同时把摄取管线做出来，保证每个分块带文件名、页码、章节和项目标签 [E4]。第 2 周把检索问答链路串起来，生成侧先接 DeepSeek API，接之前完成入库白名单和提问侧输入检查两道拦截。检索层用向量加关键词混合 [E10]，索引重建先用异步全量重建跑通 [E3]，同时记录单次重建耗时。最后用 10 人试用做验收，按上一段的两个口径判定是否进入下一阶段，并把“是否上本地 Qwen”作为试用结论之后的独立决策，不压进这两周。"
+    }
+  ],
+  "revision": 1,
+  "alignment": {
+    "questions": [],
+    "plan": [
+      "先按两周最小试用倒排关键路径：第1周确定文档摄取与权限模型（项目级隔离、非敏感文档白名单），第2周在单台双24GB显卡服务器上跑通检索问答链路并做10人小规模验收，不做全面性能压测。",
+      "给出云端API与本地开源模型两条首版路线对比：云端侧重最快上线、接口稳定但敏感文档无法接入；本地侧重数据不出内网、需单名后端工程师承担部署与运维，二者均需实测吞吐与显存占用后再定规模，材料不支持给出价格与性能数字。",
+      "设计检索层：中文为主的分块与向量检索加关键词混合召回，入库时保留文件、段落与PDF页码元数据，作为引用溯源的基础；首版不要求复杂前端跳转，只保证答案可定位到文件与段落。",
+      "设计资料更新与权限：建立文档版本与增量重建索引流程，删除/变更文档需同步失效；按项目授权至少两个项目隔离，检索前按用户项目权限过滤而非只靠提示词约束，客户合同与个人信息类文档首版不接入。",
+      "列出首版最易踩的坑与验收口径：权限过滤遗漏导致越权召回、PDF分块破坏页码定位、更新后索引陈旧、单机双卡显存与并发不足需实测、外部API误发敏感内容需白名单前置拦截；验收以10人试用中引用可定位、项目间不串数据为准。"
+    ],
+    "assumptions": [
+      "首版嵌入式向量库或单机向量数据库即可满足5000份文档、10人并发的量级，具体选型待实测。",
+      "双24GB显卡服务器可承载本地开源模型的推理服务，但可用并发与响应时间需实测确认，报告中标注为待验证。",
+      "以项目ID作为权限隔离的最小单位，用户与项目归属由现有目录或身份系统同步，首版可用手工配置。",
+      "中文分块以段落为基本单位，PDF按页保留页码元数据，暂不处理扫描件OCR。",
+      "两周内不训练或微调模型，仅使用开源模型或云端API的现成能力。"
+    ]
+  },
+  "gap_checks": [
+    {
+      "queries": [
+        "Qwen2.5 本地部署 24GB 双卡 vLLM 并发吞吐 中文 推理服务",
+        "DeepSeek API 数据隐私 企业 文档 上传 数据处理政策"
+      ],
+      "reason": "已有证据覆盖摄取、分块、元数据、更新与权限设计，但两处会直接影响两周上线决策的核心事实仍缺：一是本地部署在双24GB卡上可承载的模型规模与10人并发可行性无任何材料支撑（用户明确要求不得编造显存/吞吐数据），二是DeepSeek API侧的数据留存与隐私条款无证据、上一轮查询仅泛泛搜过。这两点若不能澄清，报告只能给方向性建议而无法支撑评审结论。"
+    }
+  ],
+  "status": "complete",
+  "evidence": [
+    {
+      "source_id": "S1",
+      "quote": "Built a flexible data preprocessing layer utilizing pypdf and docx2txt to parse and transform unstructured enterprise files (.txt, .pdf, .docx) into standardized LangChain document schemas.",
+      "start": 426,
+      "end": 615,
+      "claim": "该项目用 pypdf/docx2txt 把 txt、pdf、docx 解析为统一的 LangChain 文档结构，可作为首版文档摄取层的参考实现，但原文未提及按段落或PDF页码保留定位元数据。",
+      "conditions": "对象为该开源项目的摄取流程；支持格式限 txt/pdf/docx；是否保留页码、段落定位未说明；文档规模与中文占比未说明。",
+      "date": "",
+      "stance": "context",
+      "id": "E1"
+    },
+    {
+      "source_id": "S1",
+      "quote": "Integrated RecursiveCharacterTextSplitter to dynamically slice large documents into semantic chunks with controlled overlapping, maximizing prompt utilization while minimizing information fragmentation.",
+      "start": 618,
+      "end": 820,
+      "claim": "该项目采用带重叠的递归字符分块，可作为中文文档分块的基础方案，但仅靠字符切分不保证段落与页码边界完整，需自行补充定位元数据。",
+      "conditions": "分块参数（chunk 大小、重叠长度）未给出；是否针对中文优化未说明；对PDF页码保持的影响未说明。",
+      "date": "",
+      "stance": "context",
+      "id": "E2"
+    },
+    {
+      "source_id": "S1",
+      "quote": "When a document is programmatically uploaded or deleted, the system executes an automated asynchronous background script using Python's subprocess engine to reconstruct the semantic database.",
+      "start": 965,
+      "end": 1156,
+      "claim": "该项目在文档上传或删除时异步触发索引重建，可作为“资料更新后索引同步失效/重建”的工程做法参考；但每次全量重建对5000份文档的耗时未说明，需实测。",
+      "conditions": "更新方式为通过 FastAPI 接口程序化上传/删除触发；重建为整库重建而非明确增量；单次重建耗时与并发影响未说明。",
+      "date": "",
+      "stance": "context",
+      "id": "E3"
+    },
+    {
+      "source_id": "S2",
+      "quote": "Store metadata for every chunk:\n{\n  \"source\": \"support_policy.pdf\",\n  \"page\": 3,\n  \"section\": \"2.3 Return rules\",\n  \"chunk_id\": \"policy_003_002\"\n}",
+      "start": 10425,
+      "end": 10571,
+      "claim": "分块级别保留来源文件名、页码、章节与分块ID等元数据，是实现答案可定位到文件与段落（PDF带页码）的工程基础。",
+      "conditions": "原文为通用RAG实践建议；未限定文档规模、语言或部署方式；未说明页码在跨页分块下的精确性",
+      "date": "",
+      "stance": "support",
+      "id": "E4"
+    },
+    {
+      "source_id": "S2",
+      "quote": "For version 1, use a local embedding model + FAISS:",
+      "start": 10909,
+      "end": 10960,
+      "claim": "首版可用本地嵌入模型加本地FAISS向量库搭建检索层，这一路径不依赖外部API，可避开非敏感以外文档外发的争议。",
+      "conditions": "原文面向版本1最小实现；示例为BAAI/bge-small-zh-v1.5与faiss-cpu，未给出10人并发、5000份文档下的性能与显存数据",
+      "date": "",
+      "stance": "support",
+      "id": "E5"
+    },
+    {
+      "source_id": "S2",
+      "quote": "| Permission | RBAC + department permissions + document permissions |",
+      "start": 4266,
+      "end": 4335,
+      "claim": "权限控制被列为较完整阶段的结构组件，包含RBAC、部门权限与文档权限，可作为按项目隔离与检索前权限过滤的设计参考。",
+      "conditions": "该行出现在原文的进阶架构建议表中，非首版最小方案；原文未给出过滤实现细节、是否检索前过滤及测试验证方式",
+      "date": "",
+      "stance": "context",
+      "id": "E6"
+    },
+    {
+      "source_id": "S3",
+      "quote": "This project implements a Retrieval-Augmented Generation (RAG) system for document-based question answering using:\n- DeepSeek-R1 (via Groq) for fast & efficient AI-powered responses.\n- ChromaDB for storing and retrieving document embeddings.",
+      "start": 0,
+      "end": 241,
+      "claim": "该开源RAG项目采用ChromaDB做向量存储，并通过Groq托管的DeepSeek-R1生成答案，可作为云端API路线的检索问答链路参考。",
+      "conditions": "对象为单PDF上传的演示项目；模型经Groq第三方托管而非DeepSeek官方API；未说明内网部署、权限控制与多项目隔离；未说明规模与并发",
+      "date": "",
+      "stance": "context",
+      "id": "E7"
+    },
+    {
+      "source_id": "S3",
+      "quote": "- Upload a PDF file.\n- Extract text and convert it into vector embeddings using HuggingFace.\n- Store embeddings in ChromaDB for efficient retrieval.\n- Retrieve relevant sections from ChromaDB when a user asks a question.",
+      "start": 1471,
+      "end": 1691,
+      "claim": "该项目的摄取流程为：抽取PDF文本、用HuggingFace Embeddings向量化、写入ChromaDB、查询时召回相关片段，与首版“摄取-检索-生成”三段式路线一致。",
+      "conditions": "仅针对PDF单文件场景；未说明分块策略、页码元数据保留与增量更新机制；未说明中文文档效果",
+      "date": "",
+      "stance": "context",
+      "id": "E8"
+    },
+    {
+      "source_id": "S3",
+      "quote": "- Retrieve relevant sections from ChromaDB when a user asks a question.\n- Send retrieved data to DeepSeek-R1 (Groq) LLM for final answer generation.",
+      "start": 1620,
+      "end": 1768,
+      "claim": "该实现把召回的文档片段直接发送给外部托管的LLM生成答案，说明云端API路线下检索到的原文会离开内网，因此客户合同与个人信息类文档不能进入该链路，需白名单前置拦截。",
+      "conditions": "样本项目把内容发送至Groq云端；是否保留日志、数据留存政策未说明；不涉及权限过滤与项目隔离",
+      "date": "",
+      "stance": "support",
+      "id": "E9"
+    },
+    {
+      "source_id": "S3",
+      "quote": "- 📊 Improve retrieval accuracy using hybrid search (BM25 + embeddings).",
+      "start": 2066,
+      "end": 2137,
+      "claim": "该项目把BM25关键词检索与向量检索的混合召回列为待改进项，说明其当前版本仅用向量检索；对中文为主的文档，混合召回属于首版需自行补充而非现成能力。",
+      "conditions": "列为“计划改进”而非已实现功能；未说明中文分词与BM25适配；未给出效果数据",
+      "date": "",
+      "stance": "context",
+      "id": "E10"
+    },
+    {
+      "source_id": "S4",
+      "quote": "vllm serve Qwen/Qwen2.5-Coder-32B-Instruct-AWQ --tensor-parallel-size 4",
+      "start": 688,
+      "end": 759,
+      "claim": "本地部署Qwen可走vLLM提供OpenAI兼容的HTTP推理服务，通过tensor-parallel-size参数设置张量并行度；该示例用4卡并行跑32B AWQ量化模型，说明本地路线需先把模型服务化再让应用调用接口。",
+      "conditions": "对象为Qwen2.5-Coder-32B-Instruct-AWQ，推理引擎vLLM，示例配置4路张量并行；是否适配双24GB卡、显存占用与吞吐均未说明，需实测；未涉及检索、权限或文档摄取。",
+      "date": "",
+      "stance": "context",
+      "id": "E11"
+    },
+    {
+      "source_id": "S4",
+      "quote": "pip install vllm",
+      "start": 536,
+      "end": 552,
+      "claim": "该文给出的Qwen本地部署第一步是pip安装vLLM，说明单名后端工程师维护的本地路线需自行承担推理引擎的安装与环境配置工作。",
+      "conditions": "操作对象为Linux终端或SSH连接服务器（文中提及若用Windows需另装C++ Build Tools）；未说明CUDA与驱动版本要求，也未说明安装失败时的排障成本。",
+      "date": "",
+      "stance": "context",
+      "id": "E12"
+    },
+    {
+      "source_id": "S4",
+      "quote": "huggingface-cli download Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
+      "start": 614,
+      "end": 674,
+      "claim": "本地路线需先从模型仓库下载并落地模型权重，这一步是云端API路线不需要的额外前置工作。",
+      "conditions": "示例通过HF_ENDPOINT=https://hf-mirror.com镜像下载Qwen2.5-Coder-32B-Instruct-AWQ；权重体积、下载耗时与存储需求未说明。",
+      "date": "",
+      "stance": "context",
+      "id": "E13"
+    },
+    {
+      "source_id": "S4",
+      "quote": "端口：http://127.0.0.1:8000/v1/chat/completions",
+      "start": 824,
+      "end": 868,
+      "claim": "vLLM暴露的推理端点默认只监听本机回环地址的8000端口，接入内网试用时需另行处理网络暴露与访问控制，而权限隔离本身不在该服务层完成。",
+      "conditions": "示例以Postman在本机调用；未说明多用户并发、鉴权、按项目过滤或HTTPS配置；是否改绑到内网地址未说明。",
+      "date": "",
+      "stance": "context",
+      "id": "E14"
+    },
+    {
+      "source_id": "S5",
+      "quote": "数据保留策略： 通过 API 提交的数据默认保留 30 天用于服务监控和问题排查，用户可申请缩短保留期限甚至实时删除。企业版客户可以签署定制化的数据处理协议（DPA），以满足特定行业的合规要求。",
+      "start": 441,
+      "end": 538,
+      "claim": "该文称通过 DeepSeek API 提交的数据默认保留30天，企业版可签DPA；这支持“敏感文档不宜走外部API、且API路线需先谈数据保留条款”的判断，但为来源自述，未给出可核验的一手条款。",
+      "conditions": "对象为DeepSeek云端API；具体计费版本、企业版开通条件与DPA文本未说明；本地部署部分另述不接触数据。",
+      "date": "",
+      "stance": "support",
+      "id": "E15"
+    },
+    {
+      "source_id": "S5",
+      "quote": "在本地部署模式下，数据的完整生命周期——输入、处理、输出——都发生在企业自己的服务器上，不存在任何网络传输风险。",
+      "start": 982,
+      "end": 1038,
+      "claim": "本地部署可让文档内容不出内网，符合“含合同与个人信息的文档不发外部API”的硬约束，可作为首版只接非敏感文档时的隔离依据或二期扩展方向。",
+      "conditions": "指DeepSeek开源模型的本地部署；文中未涉及Qwen；未说明具体硬件是否够用，也未给出吞吐或显存实测。",
+      "date": "",
+      "stance": "context",
+      "id": "E16"
+    },
+    {
+      "source_id": "S5",
+      "quote": "方案二：混合云部署（平衡安全与成本）\n适用于中大型企业，兼顾安全性和灵活性：\n- 敏感数据处理：在本地私有环境中完成\n- 非敏感任务：通过 VPN 加密通道使用云端 API\n- 数据分级：根据数据敏感程度自动路由至不同环境",
+      "start": 2123,
+      "end": 2234,
+      "claim": "混合路线（非敏感走云端API、敏感走本地）在架构上可行，但需要额外的数据分级与路由机制；对只有一名后端工程师、两周上线的团队而言，这比单一路线增加实现与运维负担。",
+      "conditions": "适用于中大型企业场景的泛化描述；未给出实现细节、成本或验证数据；本文所述VPN为IPSec/WireGuard加密隧道。",
+      "date": "",
+      "stance": "context",
+      "id": "E17"
+    },
+    {
+      "source_id": "S5",
+      "quote": "建议采取以下措施：\n- 部署 DLP（数据防泄露）系统监控输入内容\n- 对敏感数据建立分类分级制度\n- 使用输入过滤器阻止特定类型的敏感信息\n- 记录所有查询日志用于审计\n- 建立 AI 使用规范并对员工进行培训",
+      "start": 6732,
+      "end": 6838,
+      "claim": "该文建议以输入过滤、分类分级和日志审计防止员工把敏感内容发到模型服务，这对应“外部API误发敏感内容需白名单前置拦截”这一首版风险点。",
+      "conditions": "针对员工使用AI的一般性建议，非针对文档问答助手的检索链路；未说明与项目级权限过滤的配合方式，也未给出落地成本。",
+      "date": "",
+      "stance": "support",
+      "id": "E18"
+    },
+    {
+      "source_id": "S6",
+      "quote": "--gpu-memory-utilization 0.90\n  ：允许vLLM最多占用90%的显存。剩下10%给CUDA context、图像特征提取的临时缓冲。对7B模型在24GB卡上，这个比例是我实测过最稳的。",
+      "start": 3848,
+      "end": 3955,
+      "claim": "在单张24GB显卡上用vLLM部署7B模型时，可通过限制显存利用率给CUDA和临时张量留余量，说明本地部署需要显式的显存调参；但该经验针对视觉语言模型，不能直接推断文本模型的显存需求。",
+      "conditions": "单卡24GB、Qwen2-VL-7B-Instruct、FP16、vLLM 0.8.x；并发与上下文长度在文中另设为batch size 1、32768上下文，非50人公司内网场景",
+      "date": "",
+      "stance": "context",
+      "id": "E19"
+    },
+    {
+      "source_id": "S6",
+      "quote": "  --shm-size=16g\n \n 这一项最容易漏。vLLM的多模态处理器在prefill阶段会大量使用共享内存做张量中转，默认的64MB根本不够，跑起来会报莫名的共享内存错误。",
+      "start": 2237,
+      "end": 2328,
+      "claim": "用Docker方式自建本地推理服务时，共享内存等容器参数配置不当会导致运行时故障，属于单名工程师维护本地部署需要预先考虑的运维细节。",
+      "conditions": "vLLM官方Docker镜像、多模态输入场景；纯文本模型是否同样需要该配置文中未说明",
+      "date": "",
+      "stance": "context",
+      "id": "E20"
+    },
+    {
+      "source_id": "S6",
+      "quote": "我建议宁可减少并发数也别轻易上量化。",
+      "start": 4716,
+      "end": 4734,
+      "claim": "量化会牺牲精度，对需要细看内容的任务尤其明显，因此在硬件允许时优先不量化、以控制并发换取质量；该取舍可类比到文档问答对引用准确性的要求，但原文未涉及文本RAG。",
+      "conditions": "文中语境为OCR、版面分析等视觉细节任务；16GB卡跑7B、4bit AWQ量化的讨论，未覆盖纯文本文档问答",
+      "date": "",
+      "stance": "context",
+      "id": "E21"
+    },
+    {
+      "source_id": "S6",
+      "quote": "MAX_WORKERS设多少。 这个数字不是越大越好。vLLM的并发能力受显存里的KV Cache限制，也受GPU算力限制。我测7B模型单卡，并发8路时吞吐就不再线性上涨了，反而开始排队。合理做法是先压测：从1路并发往上加，观察模型服务的Throughput指标和平均延迟，找到拐点，再设置爬虫的并发数。",
+      "start": 11497,
+      "end": 11649,
+      "claim": "本地单卡推理的并发能力受KV Cache和算力限制，合理做法是先小规模压测找拐点再设定并发数；这支持了首版应小规模验收、不预设吞吐数字的判断，但文中数据不可外推到该公司的文本文档场景。",
+      "conditions": "Qwen2-VL-7B单卡24GB、多模态请求；并发拐点与延迟数值仅对该配置与输入有效",
+      "date": "",
+      "stance": "support",
+      "id": "E22"
+    }
+  ],
+  "queries": [
+    "DeepSeek API document question answering RAG data privacy enterprise",
+    "Qwen2.5 本地部署 24GB 双卡 vLLM 并发吞吐 中文 推理服务",
+    "DeepSeek API 数据隐私 企业 文档 上传 数据处理政策"
+  ],
+  "effective_brief": "一家50人的软件公司准备做内部文档问答助手，应该采用DeepSeek API还是本地部署Qwen？请比较第一版的实现路线、资料更新和权限控制，以及最容易踩的坑。\n\n用户补充：\n读者是研发负责人，用途是决定两周内怎么上线内部试用版，不是写行业全景综述。\n范围：中文为主的产品手册、研发规范和运维文档，约5000份；10人同时使用。\n先接非敏感文档；包含客户合同和个人信息的文档不得发到外部API，首版可以不接。\n现有一台有两张24GB显卡的Linux服务器，只有一名后端工程师维护；不打算训练模型。\n请比较云端API与本地开源模型的工程取舍，说明检索、更新、权限和引用溯源怎么做。\n不要假装测过吞吐，也不要编模型当前价格、排行榜或显存实测数据；材料不支持就标明需要实测。\n交付自然中文、能拿去开评审会的短报告，重点是明确取舍和可执行的第一步。\n\n用户回答：\n以下是本次实验人为设定的场景参数，不是Zero或真实客户的额外口述：\n两周目标是最小可用内部试用，预留小规模验收，不包括全面性能压测。\n非敏感文档也要按项目授权，不能默认所有员工都能看；首版至少按两个项目隔离。\n引用要能定位到文件与段落，PDF尽量带页码，不要求首版做复杂前端跳转。\n按这些范围直接研究，其余实现细节采用可撤回的合理默认值，不需要再追问。\n\n研究计划：[\"先按两周最小试用倒排关键路径：第1周确定文档摄取与权限模型（项目级隔离、非敏感文档白名单），第2周在单台双24GB显卡服务器上跑通检索问答链路并做10人小规模验收，不做全面性能压测。\", \"给出云端API与本地开源模型两条首版路线对比：云端侧重最快上线、接口稳定但敏感文档无法接入；本地侧重数据不出内网、需单名后端工程师承担部署与运维，二者均需实测吞吐与显存占用后再定规模，材料不支持给出价格与性能数字。\", \"设计检索层：中文为主的分块与向量检索加关键词混合召回，入库时保留文件、段落与PDF页码元数据，作为引用溯源的基础；首版不要求复杂前端跳转，只保证答案可定位到文件与段落。\", \"设计资料更新与权限：建立文档版本与增量重建索引流程，删除/变更文档需同步失效；按项目授权至少两个项目隔离，检索前按用户项目权限过滤而非只靠提示词约束，客户合同与个人信息类文档首版不接入。\", \"列出首版最易踩的坑与验收口径：权限过滤遗漏导致越权召回、PDF分块破坏页码定位、更新后索引陈旧、单机双卡显存与并发不足需实测、外部API误发敏感内容需白名单前置拦截；验收以10人试用中引用可定位、项目间不串数据为准。\"]",
+  "sources": [
+    {
+      "id": "S1",
+      "url": "https://github.com/lindejingl-dev/Enterprise-RAG-QA",
+      "title": "GitHub - lindejingl-dev/Enterprise-RAG-QA: An enterprise-grade RAG QA system supporting TXT/PDF/DOCX ingestion, vector index auto-rebuilding, and memory-enabled chat using DeepSeek and FAISS. · GitHub",
+      "fetched_at": "2026-10-20T04:10:27.367011+00:00",
+      "content_hash": "a42b482ed48ddbcb8335d8bbe80ec6c02c87182311f122ad590fb59a91addda3",
+      "chars": 3176
+    },
+    {
+      "id": "S2",
+      "url": "https://dev.to/cheng_zhang_45ee857b979b0/how-to-build-your-own-rag-knowledge-base-qa-system-with-deepseek-3dl9",
+      "title": "How to Build Your Own RAG Knowledge Base Q&A System with DeepSeek - DEV Community",
+      "fetched_at": "2026-10-20T04:07:18.498153+00:00",
+      "content_hash": "ee256c9d34b8963dd85683e6cd092adeda8abfe2e05930a457884451f5c1a2eb",
+      "chars": 22383
+    },
+    {
+      "id": "S3",
+      "url": "https://github.com/AymenGabsi/rag_deepseek_groq_doc_qa",
+      "title": "GitHub - AymenGabsi/rag_deepseek_groq_doc_qa: 📄⚡ A RAG (Retrieval-Augmented Generation) Document QA system using Deepseek and Groq for fast and efficient querying over documents. Inspired by this tutorial, this project demonstrates how to set up a high-performance AI-powered question-answering system. · GitHub",
+      "fetched_at": "2026-10-20T04:10:27.573100+00:00",
+      "content_hash": "c30f9d9ef464d470ac820bc6d2f685c0e35182b3fe9fa7fac4e4990899f12e60",
+      "chars": 2458
+    },
+    {
+      "id": "S4",
+      "url": "https://blog.csdn.net/mnyh35/article/details/149165996",
+      "title": "使用 vLLM 部署 Qwen2.5 大模型_vllm部署qwen2.5-CSDN博客",
+      "fetched_at": "2026-10-20T04:10:35.454619+00:00",
+      "content_hash": "53c5a9e93671a47f6e6136ab514dbbfa4a628725b494241e6806f53f43b69436",
+      "chars": 1043
+    },
+    {
+      "id": "S5",
+      "url": "https://freedeepseekapi.com/zh/blog/deepseek-data-privacy-security-analysis",
+      "title": "DeepSeek 数据隐私与安全性深度分析：企业用户须知 | DeepSeek AI Blog",
+      "fetched_at": "2026-10-20T04:10:37.170868+00:00",
+      "content_hash": "da6f801746b896aa8d12377d39d85e466eae96943612f4d4981b820d0ba3e411",
+      "chars": 7345
+    },
+    {
+      "id": "S6",
+      "url": "https://blog.csdn.net/weixin_29047545/article/details/168041183",
+      "title": "Qwen2-VL与vLLM部署实战：单卡多卡启动与批量推理全指南-CSDN博客",
+      "fetched_at": "2026-10-20T04:10:35.630442+00:00",
+      "content_hash": "4acb443cc788760b41e12d3859e9701769637ae7a6ce3e42aed1ac3ca82f7a02",
+      "chars": 14471
+    }
+  ]
+}

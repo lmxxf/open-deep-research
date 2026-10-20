@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plain-deep-research"
+version = "0.1.0"
+description = "A small, observable Deep Research CLI with honest A/B experiments"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27,<1",
+  "beautifulsoup4>=4.12,<5",
+  "trafilatura>=2,<3",
+  "lxml_html_clean>=0.4,<1",
+  "ddgs>=9,<10",
+  "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[project.scripts]
+deep-research = "deep_research.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["deep_research*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

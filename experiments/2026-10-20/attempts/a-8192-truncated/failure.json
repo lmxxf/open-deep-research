@@ -1,0 +1,5 @@
+{
+  "error_type": "ModelError",
+  "message": "模型输出达到上限；请增加 --max-tokens 或缩小任务（本次不会把截断稿当成功）",
+  "status": "failed"
+}

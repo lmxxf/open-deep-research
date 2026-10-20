@@ -1,0 +1,49 @@
+{
+  "wall_seconds": 1.602,
+  "human_wait_seconds": 0.0,
+  "automated_wall_seconds": 1.602,
+  "critical_path_model_rounds": 1,
+  "dependency_path_seconds": 1.54,
+  "model_calls": 1,
+  "successful_model_calls": 1,
+  "input_tokens": 5101,
+  "output_tokens": 193,
+  "reasoning_tokens": 0,
+  "visible_output_tokens": 193,
+  "input_cache_hit_tokens": 128,
+  "input_cache_miss_tokens": 4973,
+  "calls_without_usage": 0,
+  "token_totals_complete": true,
+  "fetch_attempted_urls": 0,
+  "fetched_urls": 0,
+  "fetch_cache_hits": 0,
+  "search_calls": 0,
+  "model_versions": [
+    "deepseek-flash"
+  ],
+  "notes": [
+    "output_tokens includes reasoning; do not add reasoning twice",
+    "critical_path_model_rounds is the longest dependency path, including retries",
+    "dependency_path_seconds excludes uninstrumented scheduling and human input",
+    "missing usage is unknown, not free"
+  ],
+  "status": "complete",
+  "config": {
+    "mode": "B",
+    "profile": "parallel-fast",
+    "query_count": 3,
+    "max_pages": 6,
+    "max_rounds": 1,
+    "concurrency": 3,
+    "timeout": 15,
+    "model_timeout": 120,
+    "max_calls": 32,
+    "max_tokens": 8192,
+    "deadline": 600,
+    "model": "deepseek-flash"
+  },
+  "valid_evidence_count": 22,
+  "rejected_quote_count": 0,
+  "source_count": 6,
+  "evidence_note": "quotes match stored source text; entailment still needs human review"
+}
