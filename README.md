@@ -62,11 +62,13 @@ python -m deep_research run --mode B --question '小团队怎样评估是否需�
 python -m deep_research align --question '小团队怎样评估是否需要自建 Deep Research？' --output runs/alignment
 ```
 
-`align` 仅生成对齐建议，结果在 `runs/alignment/alignment.json`；`--output` 是新目录，不是文件名，也不会直接启动研究。所有运行入口都拒绝覆盖已有非空输出目录。
+`align` 仅生成对齐建议，结果在 `runs/alignment/alignment.json`；`--output` 是新目录，不是文件名，也不会直接启动研究。若上次状态明确为 `failed` 或 `needs_alignment`，运行入口会自动清理本程序的残留产物并重跑；已完成、状态未知或含额外用户文件的目录仍保留。导出命令不自动清理目录。
 
 B 模式可以传入 `--brief-file`、`--answers-file` 和 `--style-sample`，分别提供 UTF-8 研究简报、澄清答案和文风样本；简报与答案也可通过 `--brief`、`--answers` 直接传字符串。简报应说清楚读者、用途、研究范围、时间口径、篇幅与需要回答的问题。
 
-如果模型仍提出澄清问题，`--interactive` 会在终端询问。非交互运行会保留 `state.json`，状态为 `needs_alignment`，并以退出码 2 结束；把回答写入文件后，使用新的输出目录重跑。只有显式添加 `--accept-assumptions` 才允许带着未确认假设继续，这些假设会记录在产物里，不冒充用户偏好。
+WSL/Linux终端可用时会启用 `readline`，让中文退格按字符编辑；输入、网页、JSON写盘与API边界也会清掉非法surrogate，保留正常中文和emoji。
+
+如果模型仍提出澄清问题，`--interactive` 会在终端询问。非交互运行会保留 `state.json`，状态为 `needs_alignment`，并以退出码 2 结束；把回答写入文件后，可用同一个输出目录重跑。只有显式添加 `--accept-assumptions` 才允许带着未确认假设继续，这些假设会记录在产物里，不冒充用户偏好。
 
 ```bash
 python -m deep_research run --mode B --question-file experiments/question.txt --brief-file experiments/brief.txt --answers-file experiments/answers.txt --style-sample experiments/style_sample.txt --output runs/b-fixture

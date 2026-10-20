@@ -9,6 +9,8 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .text import clean_surrogates, dumps
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -26,7 +28,7 @@ _BLOCKED = re.compile(
 def canonical_url(url: str) -> str:
     """Normalize HTTP URLs for deduplication without destroying meaningful queries."""
     try:
-        parts = urlsplit(url.strip())
+        parts = urlsplit(clean_surrogates(url).strip())
         if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
             return ""
         if parts.username or parts.password:
@@ -79,6 +81,7 @@ class Web:
 
     @staticmethod
     def _clean_results(rows: list[dict], limit: int, provider: str) -> list[dict]:
+        rows = clean_surrogates(rows)
         result, seen = [], set()
         for row in rows:
             url = canonical_url(row.get("url") or row.get("href") or "")
@@ -104,7 +107,7 @@ class Web:
 
     async def _search_duckduckgo_lite(self, query: str, limit: int) -> list[dict]:
         response = await self._get("https://lite.duckduckgo.com/lite/", params={"q": query})
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(clean_surrogates(response.text), "html.parser")
         rows = []
         for link in soup.select("a.result-link"):
             href = urljoin(str(response.url), link.get("href", ""))
@@ -126,14 +129,14 @@ class Web:
 
     async def _search_bing(self, query: str, limit: int) -> list[dict]:
         response = await self._get("https://www.bing.com/search", params={"q": query, "format": "rss"})
-        root = ET.fromstring(response.text)
+        root = ET.fromstring(clean_surrogates(response.text))
         return [{"url": item.findtext("link", ""), "title": item.findtext("title", ""),
                  "snippet": item.findtext("description", "")}
                 for item in root.findall(".//item")]
 
     async def _search_duckduckgo(self, query: str, limit: int) -> list[dict]:
         response = await self._get("https://html.duckduckgo.com/html/", params={"q": query})
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(clean_surrogates(response.text), "html.parser")
         rows = []
         for result in soup.select(".result"):
             link = result.select_one("a.result__a")
@@ -147,6 +150,7 @@ class Web:
         return rows
 
     async def search(self, query: str, limit: int = 4) -> list[dict]:
+        query = clean_surrogates(query)
         if not query.strip():
             raise ValueError("Search query must not be empty")
         limit = max(1, min(int(limit), 20))
@@ -178,7 +182,8 @@ class Web:
 
     def _load_cache(self, url: str) -> dict | None:
         try:
-            value = json.loads(self._cache_path(url).read_text(encoding="utf-8"))
+            value = clean_surrogates(json.loads(self._cache_path(url).read_text(encoding="utf-8")))
+            value["content_hash"] = hashlib.sha256(value["text"].encode("utf-8")).hexdigest()
             # A day is a practical prototype TTL; fetched_at remains the original timestamp.
             age = time.time() - datetime.fromisoformat(value["fetched_at"]).timestamp()
             if 0 <= age < 86400 and _valid_text(value["title"], value["text"]):
@@ -194,12 +199,12 @@ class Web:
         if "pdf" in content_type or "octet-stream" in content_type:
             raise RuntimeError("Binary document requires Reader conversion")
         if "text/plain" in content_type or "text/markdown" in content_type:
-            return urlsplit(url).hostname or url, response.text
-        soup = BeautifulSoup(response.text, "html.parser")
+            return urlsplit(url).hostname or url, clean_surrogates(response.text)
+        soup = BeautifulSoup(clean_surrogates(response.text), "html.parser")
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         if _BLOCKED.search(title):
             raise RuntimeError("Website returned a challenge or access-denied page")
-        text = await asyncio.to_thread(trafilatura.extract, response.text, url=url,
+        text = await asyncio.to_thread(trafilatura.extract, clean_surrogates(response.text), url=url,
                                        include_comments=False, include_tables=True, favor_precision=True)
         if not text:
             for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
@@ -211,7 +216,7 @@ class Web:
     async def _fetch_reader(self, url: str) -> tuple[str, str]:
         response = await self._get("https://r.jina.ai/" + url,
                                    headers={"Accept": "text/plain", "X-Retain-Images": "none"})
-        raw = response.text
+        raw = clean_surrogates(response.text)
         if re.search(r"^Warning:.*(?:error (?:403|404|429|5\d\d)|captcha)", raw, re.I | re.M):
             raise RuntimeError("Reader returned an upstream error or challenge")
         title_match = re.search(r"^Title:\s*(.*)$", raw, re.M)
@@ -233,6 +238,7 @@ class Web:
             for name, fetcher in (("direct", self._fetch_direct), ("jina-reader", self._fetch_reader)):
                 try:
                     title, text = await fetcher(url)
+                    title, text = clean_surrogates((title, text))
                     if not _valid_text(title, text):
                         raise RuntimeError("Empty, short, or challenge page")
                     value = {"url": url, "title": title, "text": text,
@@ -241,7 +247,7 @@ class Web:
                              "cache_hit": False, "provider": name}
                     path = self._cache_path(url)
                     temporary = path.with_suffix(".tmp")
-                    temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+                    temporary.write_text(dumps(value, ensure_ascii=False), encoding="utf-8")
                     temporary.replace(path)
                     return value
                 except Exception as exc:

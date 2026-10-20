@@ -1,14 +1,15 @@
 """Append-only spans and a dependency DAG, not a guessed 'agent round' count."""
 
-import json
 import time
 from pathlib import Path
+
+from .text import dumps
 
 
 def save_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
 
 
@@ -34,7 +35,7 @@ class Metrics:
         event.update(status=status, end_s=round(time.perf_counter()-self.started, 6))
         event["elapsed_s"] = round(event["end_s"]-event["start_s"], 6)
         with (self.directory / "events.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False)+"\n")
+            f.write(dumps(event, ensure_ascii=False)+"\n")
 
     def summary(self):
         # Parents always refer to earlier-created spans. A model attempt weighs one;

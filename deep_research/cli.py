@@ -5,24 +5,49 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
+
+from .text import clean_surrogates, dumps, write_text
 
 from . import prompts
 from .engine import Config, Research
 from .metrics import save_json
 
+try:
+    import readline  # noqa: F401 - enables UTF-8-aware editing for input() on Unix
+except ImportError:
+    pass
+
 
 def read(path):
-    return Path(path).read_text(encoding="utf-8") if path else ""
+    return clean_surrogates(Path(path).read_text(encoding="utf-8", errors="ignore")) if path else ""
 
 
 def load(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return clean_surrogates(json.loads(read(path)))
 
 
-def require_empty(directory):
+def require_empty(directory, restart_incomplete=False):
     if directory.exists() and any(directory.iterdir()):
+        statuses = []
+        for name in ("metrics.json", "state.json", "failure.json"):
+            try:
+                statuses.append(load(directory/name).get("status"))
+            except (OSError, ValueError, AttributeError):
+                pass
+        # Never erase successful/unknown directories, or follow a directory symlink.
+        if (restart_incomplete and not directory.is_symlink()
+                and statuses and all(s in {"failed", "needs_alignment", None} for s in statuses)
+                and any(s in {"failed", "needs_alignment"} for s in statuses)):
+            owned = {"input.json", "metrics.json", "state.json", "failure.json", "partial.json",
+                     "events.jsonl", "prompts.jsonl", "model_outputs.jsonl", "trace.json",
+                     "search_results.json", "report.md", "revision.json", "alignment.json", "pages"}
+            if all(p.name.removesuffix(".tmp") in owned for p in directory.iterdir()):
+                shutil.rmtree(directory)
+                print(f"清理上次未完成的运行，重新开始：{directory}")
+                return
         raise ValueError(f"目录已有文件，不覆盖：{directory}")
 
 
@@ -48,7 +73,7 @@ def make_parser():
         group = q.add_mutually_exclusive_group(required=True)
         group.add_argument("--question")
         group.add_argument("--question-file")
-        q.add_argument("--output", type=Path, required=True, help="新运行目录，不覆盖旧结果")
+        q.add_argument("--output", type=Path, required=True, help="运行目录；失败/待澄清可重跑，成功结果不覆盖")
         q.add_argument("--brief", default="")
         q.add_argument("--brief-file")
         q.add_argument("--answers", default="")
@@ -74,6 +99,7 @@ def make_parser():
 
 
 async def execute(args):
+    args = argparse.Namespace(**clean_surrogates(vars(args)))
     mode = getattr(args, "mode", "B")
     profile = args.profile or ("serial-thinking" if mode == "A" else "parallel-fast")
     config = Config(mode=mode, profile=profile, **{k: getattr(args, k) for k in (
@@ -88,7 +114,7 @@ async def execute(args):
         output = args.output or args.run_dir / f"revision-{number}"
     else:
         output = args.output
-    require_empty(output)
+    require_empty(output, restart_incomplete=True)
     runner = Research(output, config)
     state, status = None, "failed"
     try:
@@ -103,7 +129,7 @@ async def execute(args):
                                                   dict(question=question, brief=brief, answers=answers))
                 state = dict(status="alignment_only", question=question, brief=brief, answers=answers, **alignment)
                 save_json(output/"alignment.json", state)
-                print(json.dumps(state, ensure_ascii=False, indent=2))
+                print(dumps(state, ensure_ascii=False, indent=2))
             else:
                 state = await asyncio.wait_for(runner.run(question, brief, answers, read(args.style_sample),
                     args.interactive, args.accept_assumptions), config.deadline)
@@ -140,7 +166,7 @@ def export_run(source, output):
     # API keys are never part of this schema; reject accidental pasted credentials too.
     files = {"report.md": read(source/"report.md"), "metrics.json": read(source/"metrics.json"),
              "events.jsonl": read(source/"events.jsonl"),
-             "evidence.json": json.dumps(metadata, ensure_ascii=False, indent=2)}
+             "evidence.json": dumps(metadata, ensure_ascii=False, indent=2)}
     if (source/"revision.json").exists():
         files["revision.json"] = read(source/"revision.json")
     for text in files.values():
@@ -148,7 +174,7 @@ def export_run(source, output):
             raise ValueError("导出内容疑似包含密钥，已拒绝写出")
     output.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        (output/name).write_text(text, encoding="utf-8")
+        write_text(output/name, text)
     print(f"公开结果已导出：{output}（不含原网页和完整Prompt）")
 
 
@@ -157,7 +183,7 @@ def chat(run_dir):
     print("输入 P2 修改要求，只改该段；补查用 /research P2 问题；/quit 退出。")
     while True:
         try:
-            line = input("> ").strip()
+            line = clean_surrogates(input("> ")).strip()
         except EOFError:
             return
         if line in ("/quit", "/exit"):
@@ -183,7 +209,7 @@ def chat(run_dir):
 
 
 def main():
-    args = make_parser().parse_args()
+    args = make_parser().parse_args(clean_surrogates(sys.argv[1:]))
     try:
         if args.command == "export":
             export_run(args.run_dir, args.output)

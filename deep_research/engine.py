@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .text import clean_surrogates, dumps, write_text
+
 from . import prompts
 from .llm import LLM
 from .metrics import Metrics, save_json
@@ -195,7 +197,7 @@ class Research:
             self.visited.add(canonical_url(url))
             event = self.metrics.start("fetch", "fetch", dependencies, url=url)
             try:
-                page = await self.web.fetch(url)
+                page = clean_surrogates(await self.web.fetch(url))
                 if len(page.get("text", "").strip()) < 120:
                     raise ValueError("正文过短")
                 self.metrics.end(event, cache_hit=page.get("cache_hit", False), chars=len(page["text"]))
@@ -229,7 +231,7 @@ class Research:
             # Preserve raw text locally, publish only metadata and selected short quotes.
             raw = self.output / "pages" / (sid+".txt")
             raw.parent.mkdir(exist_ok=True)
-            raw.write_text(page["text"], encoding="utf-8")
+            write_text(raw, page["text"])
             source = dict(id=sid, url=page["url"], title=page.get("title") or page["url"],
                           fetched_at=page.get("fetched_at"), content_hash=page.get("content_hash"),
                           raw_path=str(raw), chars=len(page["text"]))
@@ -293,6 +295,7 @@ class Research:
         return [r[1] for r in results] or list(parents)
 
     async def run(self, question, brief="", answers="", style_sample="", interactive=False, accept_assumptions=False):
+        question, brief, answers, style_sample = clean_surrogates((question, brief, answers, style_sample))
         state = dict(question=question, brief=brief, answers=answers, style_sample=style_sample,
                      config=asdict(self.config), created_at=datetime.now(timezone.utc).isoformat(),
                      sections=[], revision=0)
@@ -311,10 +314,10 @@ class Research:
                 started = time.perf_counter()
                 replies = []
                 for q in questions:
-                    response = await asyncio.to_thread(input, q+"\n> ")
+                    response = clean_surrogates(await asyncio.to_thread(input, q+"\n> "))
                     replies.append(dict(question=q, answer=response))
                 self.metrics.human_seconds += time.perf_counter()-started
-                answers = json.dumps(replies, ensure_ascii=False)
+                answers = dumps(replies, ensure_ascii=False)
                 state["answers"] = answers
                 effective += "\n"+answers
             elif questions and not accept_assumptions:
@@ -322,10 +325,10 @@ class Research:
                 save_json(self.output/"state.json", state)
                 return state
             state["alignment"] = alignment
-            effective += "\n研究计划：" + json.dumps(alignment.get("plan", []), ensure_ascii=False)
+            effective += "\n研究计划：" + dumps(alignment.get("plan", []), ensure_ascii=False)
             if questions and accept_assumptions:
                 state["unanswered_questions"] = questions
-                effective += "\n以下是未确认假设，不能冒充用户偏好："+json.dumps(alignment.get("assumptions", []), ensure_ascii=False)
+                effective += "\n以下是未确认假设，不能冒充用户偏好："+dumps(alignment.get("assumptions", []), ensure_ascii=False)
             query_prompt = prompts._COMMON + """围绕给定brief中的实际问题产生至多query_count个搜索词。
 优先一手资料，分别覆盖关键选型条件；两个及以上查询时第一个查询必须全英文，另一个中文。
 每个查询只问一个具体问题，用4到8个关键词，避免长串关键词被搜索引擎弱化。
@@ -383,11 +386,12 @@ class Research:
         state.update(status="complete", sources=self.sources, evidence=self.evidence,
                      summaries=self.summaries, queries=self.queries, effective_brief=effective)
         save_json(self.output/"state.json", state)
-        (self.output/"report.md").write_text(render(state), encoding="utf-8")
+        write_text(self.output/"report.md", render(state))
         return state
 
     async def revise(self, original, section_id, instruction, research=False):
-        state = json.loads(json.dumps(original, ensure_ascii=False))
+        section_id, instruction = clean_surrogates((section_id, instruction))
+        state = json.loads(dumps(original, ensure_ascii=False))
         self.sources, self.evidence = state["sources"], state.get("evidence", [])
         self.visited = {canonical_url(s["url"]) for s in self.sources}
         self.queries = list(state.get("queries", []))
@@ -419,5 +423,5 @@ class Research:
         save_json(self.output/"revision.json", dict(section_id=section_id, instruction=instruction,
                   research=research, before=target, after=replacement, unchanged_sections_verified=True))
         save_json(self.output/"state.json", state)
-        (self.output/"report.md").write_text(render(state), encoding="utf-8")
+        write_text(self.output/"report.md", render(state))
         return state

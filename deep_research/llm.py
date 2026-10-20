@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+from .text import clean_surrogates, dumps
+
 import httpx
 from dotenv import load_dotenv
 
@@ -36,16 +38,18 @@ class LLM:
         await self.http.aclose()
 
     async def ask(self, name, system, payload, parents=()):
+        name, system, payload = clean_surrogates((name, system, payload))
         messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+                    {"role": "user", "content": dumps(payload, ensure_ascii=False)}]
         request = dict(model=self.model, messages=messages,
                        thinking={"type": "enabled" if self.thinking else "disabled"},
                        max_tokens=self.max_tokens, response_format={"type": "json_object"})
         if self.thinking:
             request["reasoning_effort"] = "high"
+        request = clean_surrogates(request)
         # Actual prompts are available locally for audit, without authorization data.
         with (self.metrics.directory / "prompts.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(dict(stage=name, request=request), ensure_ascii=False)+"\n")
+            f.write(dumps(dict(stage=name, request=request), ensure_ascii=False)+"\n")
         previous = list(parents)
         for attempt in range(2):
             async with self.semaphore:
@@ -61,7 +65,7 @@ class LLM:
                     if response.status_code != 200:
                         # Response bodies may echo request data; do not save them in logs.
                         raise ModelError(f"DeepSeek HTTP {response.status_code}")
-                    result = response.json()
+                    result = clean_surrogates(response.json())
                     choice = result["choices"][0]
                     usage = result.get("usage", {})
                     if usage and not self.thinking:
@@ -71,10 +75,10 @@ class LLM:
                         raise ModelError("模型输出达到上限；请增加 --max-tokens 或缩小任务（本次不会把截断稿当成功）")
                     content = choice["message"].get("content") or ""
                     with (self.metrics.directory / "model_outputs.jsonl").open("a", encoding="utf-8") as f:
-                        f.write(json.dumps(dict(event_id=event, stage=name, response_id=result.get("id"),
+                        f.write(dumps(dict(event_id=event, stage=name, response_id=result.get("id"),
                                                 content=content.replace(self.key, "[REDACTED]")), ensure_ascii=False)+"\n")
                     try:
-                        data = json.loads(content)
+                        data = clean_surrogates(json.loads(content))
                         if not isinstance(data, dict):
                             raise ValueError("not an object")
                     except (ValueError, TypeError):
